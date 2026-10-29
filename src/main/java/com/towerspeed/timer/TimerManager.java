@@ -259,13 +259,13 @@ public class TimerManager {
         );
 
         RunRecord previousPB = recordStorage.getBestRun(currentCategory.id());
-        boolean isNewPB = recordStorage.processCompletedRun(record);
+        int rank = recordStorage.processCompletedRun(record);
 
         broadcast(MM.deserialize("<gray>======================================</gray>"));
         broadcast(MM.deserialize("<green><bold>★ RUN FINISHED! ★</bold></green>"));
         broadcast(MM.deserialize("<white>Total Time: </white><yellow><bold>" + TimeFormatter.formatTime(totalElapsed) + "</bold></yellow>"));
 
-        if (isNewPB) {
+        if (rank == 1) {
             String deltaStr = previousPB != null ? " (" + TimeFormatter.formatDelta(totalElapsed - previousPB.totalTimeMs()) + ")" : "";
             broadcast(MM.deserialize("<gold><bold>★ NEW SERVER RECORD / PB! ★</bold></gold><green>" + deltaStr + "</green>"));
 
@@ -284,9 +284,18 @@ public class TimerManager {
                     spawnFirework(p);
                 }
             }
+        } else if (rank > 1 && rank <= 5) {
+            broadcast(MM.deserialize("<yellow><bold>★ TOP 5 FINISH! Rank #" + rank + " on the Leaderboard! ★</bold></yellow>"));
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                if (plugin.getConfig().getBoolean("play-sounds", true)) {
+                    p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1f, 1.2f);
+                }
+            }
         } else {
-            long diff = totalElapsed - previousPB.totalTimeMs();
-            broadcast(MM.deserialize("<gray>Missed PB by: <red>+" + TimeFormatter.formatDelta(diff) + "</red></gray>"));
+            if (previousPB != null) {
+                long diff = totalElapsed - previousPB.totalTimeMs();
+                broadcast(MM.deserialize("<gray>Missed PB by: <red>+" + TimeFormatter.formatDelta(diff) + "</red></gray>"));
+            }
         }
         broadcast(MM.deserialize("<gray>======================================</gray>"));
     }

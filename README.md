@@ -39,8 +39,11 @@ Designed specifically for **co-op runs** (such as tower climbing, parkour challe
 | `/timer reset` | Resets the timer back to 00:00.0 | `towerspeed.timer` (default: all) |
 | `/timer toggle` | Toggles the sidebar scoreboard on/off for yourself | None (all players) |
 | `/timer category <name>` | Switches active category (e.g. `tower_climb`, `any_percent`) | `towerspeed.timer` |
-| `/timer records` | Displays the current server PB, team members, and gold splits | None (all players) |
-| `/timer reload` | Reloads `config.yml` | `towerspeed.admin` (default: OP) |
+| `/timer records` | Displays the Top 5 leaderboard with times and dates | None (all players) |
+| `/timer records view <#>` | View detailed splits for a specific ranked run | None (all players) |
+| `/timer records delete <#>` | Deletes an accidental record and recalculates PB | `towerspeed.timer` |
+| `/timer records clear [cat]` | Clears all records for a category | `towerspeed.admin` (default: OP) |
+| `/timer reload` | Reloads `config.yml` and all record files | `towerspeed.admin` (default: OP) |
 
 ---
 

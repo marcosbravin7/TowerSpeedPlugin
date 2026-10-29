@@ -2,48 +2,58 @@ package com.towerspeed.storage;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
+import com.towerspeed.timer.CategoryRecords;
 import com.towerspeed.timer.RunRecord;
 import com.towerspeed.timer.Split;
 
 import java.io.*;
-import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Manages persistence of global server speedrun records and gold splits.
+ * Manages human-readable JSON persistence for Top 5 runs and gold splits per category.
  */
 public class RecordStorage {
 
-    private final File dataFile;
+    private static final int MAX_TOP_RUNS = 5;
+
+    private final File recordsFolder;
     private final Logger logger;
     private final Gson gson;
 
-    private Map<String, RunRecord> bestRuns = new HashMap<>();
-    private Map<String, Map<String, Long>> goldSegments = new HashMap<>();
+    private final Map<String, CategoryRecords> categoryRecordsMap = new HashMap<>();
 
     public RecordStorage(File dataFolder, Logger logger) {
-        this.dataFile = new File(dataFolder, "records.json");
+        this.recordsFolder = new File(dataFolder, "records");
         this.logger = logger;
         this.gson = new GsonBuilder().setPrettyPrinting().create();
-        load();
+        loadAll();
     }
 
     public synchronized RunRecord getBestRun(String categoryId) {
-        return bestRuns.get(categoryId);
+        CategoryRecords cr = categoryRecordsMap.get(categoryId.toLowerCase());
+        return cr != null ? cr.getBestRun() : null;
+    }
+
+    public synchronized List<RunRecord> getTopRuns(String categoryId) {
+        CategoryRecords cr = categoryRecordsMap.get(categoryId.toLowerCase());
+        if (cr == null) {
+            return Collections.emptyList();
+        }
+        return Collections.unmodifiableList(cr.getTopRuns());
     }
 
     public synchronized Long getGoldSegment(String categoryId, String splitName) {
-        Map<String, Long> categoryGolds = goldSegments.get(categoryId);
-        if (categoryGolds == null) return null;
-        return categoryGolds.get(splitName);
+        CategoryRecords cr = categoryRecordsMap.get(categoryId.toLowerCase());
+        return cr != null ? cr.getGoldSegment(splitName) : null;
     }
 
     public synchronized boolean isNewRecord(String categoryId, long totalTimeMs) {
-        RunRecord currentBest = bestRuns.get(categoryId);
+        RunRecord currentBest = getBestRun(categoryId);
         return currentBest == null || totalTimeMs < currentBest.totalTimeMs();
     }
 
@@ -53,70 +63,170 @@ public class RecordStorage {
     }
 
     /**
-     * Updates records with a finished run, saving both overall PB and individual gold splits.
+     * Processes a finished run.
+     *
+     * @param record The completed run record
+     * @return 1 if new PB (#1), 2-5 if made leaderboard, -1 if did not make top 5
      */
-    public synchronized boolean processCompletedRun(RunRecord record) {
-        boolean isNewPB = isNewRecord(record.categoryId(), record.totalTimeMs());
+    public synchronized int processCompletedRun(RunRecord record) {
+        String catId = record.categoryId().toLowerCase();
+        CategoryRecords cr = categoryRecordsMap.computeIfAbsent(catId, CategoryRecords::new);
 
-        // Check and update individual gold segments
-        Map<String, Long> categoryGolds = goldSegments.computeIfAbsent(record.categoryId(), k -> new HashMap<>());
-        for (Split split : record.splits()) {
-            Long existingGold = categoryGolds.get(split.name());
-            if (existingGold == null || split.segmentTimeMs() < existingGold) {
-                categoryGolds.put(split.name(), split.segmentTimeMs());
+        List<RunRecord> runs = cr.getTopRuns();
+        runs.add(record);
+        runs.sort(Comparator.comparingLong(RunRecord::totalTimeMs));
+
+        int rank = runs.indexOf(record) + 1; // 1-indexed
+
+        if (runs.size() > MAX_TOP_RUNS) {
+            // Trim to max top runs
+            while (runs.size() > MAX_TOP_RUNS) {
+                runs.remove(runs.size() - 1);
             }
         }
 
-        if (isNewPB) {
-            bestRuns.put(record.categoryId(), record);
+        // Check if our run made the cut
+        if (rank > MAX_TOP_RUNS) {
+            rank = -1;
         }
 
-        save();
-        return isNewPB;
-    }
-
-    public synchronized void resetCategory(String categoryId) {
-        bestRuns.remove(categoryId);
-        goldSegments.remove(categoryId);
-        save();
-    }
-
-    private void load() {
-        if (!dataFile.exists()) {
-            return;
-        }
-
-        try (Reader reader = new InputStreamReader(new FileInputStream(dataFile), StandardCharsets.UTF_8)) {
-            Type containerType = new TypeToken<StorageContainer>() {}.getType();
-            StorageContainer container = gson.fromJson(reader, containerType);
-            if (container != null) {
-                if (container.bestRuns != null) this.bestRuns = container.bestRuns;
-                if (container.goldSegments != null) this.goldSegments = container.goldSegments;
+        // Update gold segments from this run
+        for (Split s : record.splits()) {
+            Long currentGold = cr.getGoldSegment(s.name());
+            if (currentGold == null || s.segmentTimeMs() < currentGold) {
+                cr.getGoldSegments().put(s.name(), s.segmentTimeMs());
             }
-            logger.info("Loaded speedrun records for " + bestRuns.size() + " categories.");
-        } catch (Exception e) {
-            logger.log(Level.SEVERE, "Failed to load records.json", e);
+        }
+
+        saveCategory(catId);
+        return rank;
+    }
+
+    /**
+     * Deletes a record from the leaderboard by rank (1-5).
+     *
+     * @param categoryId Category ID
+     * @param rank       1-indexed rank (1 is PB)
+     * @return The removed RunRecord, or null if rank was invalid
+     */
+    public synchronized RunRecord deleteRecord(String categoryId, int rank) {
+        String catId = categoryId.toLowerCase();
+        CategoryRecords cr = categoryRecordsMap.get(catId);
+        if (cr == null) return null;
+
+        List<RunRecord> runs = cr.getTopRuns();
+        int index = rank - 1;
+        if (index < 0 || index >= runs.size()) {
+            return null;
+        }
+
+        RunRecord removed = runs.remove(index);
+        cr.recalculateGoldSegments();
+        saveCategory(catId);
+        return removed;
+    }
+
+    /**
+     * Clears all leaderboard runs and gold splits for a category.
+     */
+    public synchronized void clearCategory(String categoryId) {
+        String catId = categoryId.toLowerCase();
+        categoryRecordsMap.remove(catId);
+        File file = getCategoryFile(catId);
+        if (file.exists()) {
+            file.delete();
+        }
+    }
+
+    private File getCategoryFile(String categoryId) {
+        return new File(recordsFolder, categoryId.toLowerCase() + ".json");
+    }
+
+    public synchronized void loadAll() {
+        categoryRecordsMap.clear();
+
+        if (!recordsFolder.exists()) {
+            recordsFolder.mkdirs();
+        }
+
+        // Migrate legacy records.json in parent folder if it exists
+        File legacyFile = new File(recordsFolder.getParentFile(), "records.json");
+        if (legacyFile.exists()) {
+            migrateLegacyFile(legacyFile);
+        }
+
+        File[] files = recordsFolder.listFiles((dir, name) -> name.toLowerCase().endsWith(".json"));
+        if (files == null) return;
+
+        for (File file : files) {
+            try (Reader reader = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
+                CategoryRecords cr = gson.fromJson(reader, CategoryRecords.class);
+                if (cr != null && cr.getCategoryId() != null) {
+                    categoryRecordsMap.put(cr.getCategoryId().toLowerCase(), cr);
+                }
+            } catch (Exception e) {
+                logger.log(Level.SEVERE, "Failed to load record file: " + file.getName(), e);
+            }
+        }
+
+        logger.info("Loaded records for " + categoryRecordsMap.size() + " categories.");
+    }
+
+    public synchronized void saveCategory(String categoryId) {
+        String catId = categoryId.toLowerCase();
+        CategoryRecords cr = categoryRecordsMap.get(catId);
+        if (cr == null) return;
+
+        if (!recordsFolder.exists()) {
+            recordsFolder.mkdirs();
+        }
+
+        File targetFile = getCategoryFile(catId);
+        File tempFile = new File(recordsFolder, catId + ".json.tmp");
+
+        try {
+            try (Writer writer = new OutputStreamWriter(new FileOutputStream(tempFile), StandardCharsets.UTF_8)) {
+                gson.toJson(cr, writer);
+            }
+            Files.move(tempFile.toPath(), targetFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            logger.log(Level.SEVERE, "Failed to atomically save records for: " + catId, e);
         }
     }
 
     public synchronized void save() {
-        try {
-            if (!dataFile.getParentFile().exists()) {
-                dataFile.getParentFile().mkdirs();
-            }
-            try (Writer writer = new OutputStreamWriter(new FileOutputStream(dataFile), StandardCharsets.UTF_8)) {
-                StorageContainer container = new StorageContainer();
-                container.bestRuns = this.bestRuns;
-                container.goldSegments = this.goldSegments;
-                gson.toJson(container, writer);
-            }
-        } catch (IOException e) {
-            logger.log(Level.SEVERE, "Failed to save records.json", e);
+        for (String catId : categoryRecordsMap.keySet()) {
+            saveCategory(catId);
         }
     }
 
-    private static class StorageContainer {
-        Map<String, RunRecord> bestRuns = new HashMap<>();
-        Map<String, Map<String, Long>> goldSegments = new HashMap<>();
+    private void migrateLegacyFile(File legacyFile) {
+        try {
+            logger.info("Migrating legacy records.json to records/ folder...");
+            try (Reader reader = new InputStreamReader(new FileInputStream(legacyFile), StandardCharsets.UTF_8)) {
+                LegacyContainer container = gson.fromJson(reader, LegacyContainer.class);
+                if (container != null && container.bestRuns != null) {
+                    for (Map.Entry<String, RunRecord> entry : container.bestRuns.entrySet()) {
+                        String catId = entry.getKey().toLowerCase();
+                        CategoryRecords cr = categoryRecordsMap.computeIfAbsent(catId, CategoryRecords::new);
+                        cr.getTopRuns().add(entry.getValue());
+                        if (container.goldSegments != null && container.goldSegments.containsKey(entry.getKey())) {
+                            cr.getGoldSegments().putAll(container.goldSegments.get(entry.getKey()));
+                        }
+                        saveCategory(catId);
+                    }
+                }
+            }
+            File backup = new File(legacyFile.getParentFile(), "records.json.migrated");
+            legacyFile.renameTo(backup);
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Failed to migrate legacy records.json", e);
+        }
+    }
+
+    private static class LegacyContainer {
+        Map<String, RunRecord> bestRuns;
+        Map<String, Map<String, Long>> goldSegments;
     }
 }

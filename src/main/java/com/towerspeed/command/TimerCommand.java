@@ -21,6 +21,7 @@ import java.util.*;
 public class TimerCommand implements BasicCommand {
 
     private static final MiniMessage MM = MiniMessage.miniMessage();
+    private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm");
 
     private final TowerSpeedPlugin plugin;
     private final TimerManager timer;
@@ -96,8 +97,8 @@ public class TimerCommand implements BasicCommand {
                 }
                 timer.setCategory(args[1], sender);
             }
-            case "record", "records", "pb" -> {
-                showRecords(sender);
+            case "record", "records", "leaderboard", "pb" -> {
+                handleRecords(sender, args);
             }
             case "reload" -> {
                 if (!sender.hasPermission("towerspeed.admin")) {
@@ -106,33 +107,149 @@ public class TimerCommand implements BasicCommand {
                 }
                 plugin.reloadConfig();
                 timer.loadFromConfig();
-                sender.sendMessage(MM.deserialize("<green>[Timer] Configuration reloaded!</green>"));
+                timer.getRecordStorage().loadAll();
+                sender.sendMessage(MM.deserialize("<green>[Timer] Configuration and records reloaded!</green>"));
             }
             default -> sendHelp(sender);
         }
     }
 
-    private void showRecords(CommandSender sender) {
-        Category cat = timer.getCurrentCategory();
-        RunRecord record = timer.getRecordStorage().getBestRun(cat.id());
+    private void handleRecords(CommandSender sender, String[] args) {
+        if (args.length == 1) {
+            showLeaderboard(sender, timer.getCurrentCategory());
+            return;
+        }
+
+        String action = args[1].toLowerCase();
+        switch (action) {
+            case "view" -> {
+                if (args.length < 3) {
+                    sender.sendMessage(MM.deserialize("<gray>Usage: /timer records view <rank#></gray>"));
+                    return;
+                }
+                try {
+                    int rank = Integer.parseInt(args[2]);
+                    showRecordDetails(sender, timer.getCurrentCategory(), rank);
+                } catch (NumberFormatException e) {
+                    sender.sendMessage(MM.deserialize("<red>Rank must be a number between 1 and 5.</red>"));
+                }
+            }
+            case "delete", "remove" -> {
+                if (args.length < 3) {
+                    sender.sendMessage(MM.deserialize("<gray>Usage: /timer records delete <rank#> [category]</gray>"));
+                    return;
+                }
+
+                int rank;
+                Category category = timer.getCurrentCategory();
+
+                try {
+                    rank = Integer.parseInt(args[2]);
+                    if (args.length >= 4) {
+                        Category specified = timer.getCategories().get(args[3].toLowerCase());
+                        if (specified != null) category = specified;
+                    }
+                } catch (NumberFormatException e) {
+                    // Try: /timer records delete <category> <rank#>
+                    Category specified = timer.getCategories().get(args[2].toLowerCase());
+                    if (specified != null && args.length >= 4) {
+                        category = specified;
+                        try {
+                            rank = Integer.parseInt(args[3]);
+                        } catch (NumberFormatException ex) {
+                            sender.sendMessage(MM.deserialize("<red>Invalid rank number.</red>"));
+                            return;
+                        }
+                    } else {
+                        sender.sendMessage(MM.deserialize("<red>Invalid command format. Usage: /timer records delete <rank#></red>"));
+                        return;
+                    }
+                }
+
+                RunRecord deleted = timer.getRecordStorage().deleteRecord(category.id(), rank);
+                if (deleted != null) {
+                    sender.sendMessage(MM.deserialize("<yellow>[Timer] Successfully deleted rank #" + rank + " ("
+                            + TimeFormatter.formatTime(deleted.totalTimeMs()) + ") from " + category.displayName() + ".</yellow>"));
+                    RunRecord newPB = timer.getRecordStorage().getBestRun(category.id());
+                    if (newPB != null) {
+                        timer.broadcast(MM.deserialize("<yellow>[Timer] Server PB for " + category.displayName() + " is now: <green>"
+                                + TimeFormatter.formatTime(newPB.totalTimeMs()) + "</green></yellow>"));
+                    } else {
+                        timer.broadcast(MM.deserialize("<yellow>[Timer] No records remaining for " + category.displayName() + ".</yellow>"));
+                    }
+                } else {
+                    sender.sendMessage(MM.deserialize("<red>Could not find record rank #" + rank + " for " + category.displayName() + ".</red>"));
+                }
+            }
+            case "clear" -> {
+                Category cat = timer.getCurrentCategory();
+                if (args.length >= 3) {
+                    Category specified = timer.getCategories().get(args[2].toLowerCase());
+                    if (specified != null) cat = specified;
+                }
+                timer.getRecordStorage().clearCategory(cat.id());
+                timer.broadcast(MM.deserialize("<yellow>[Timer] Cleared all records for category: " + cat.displayName() + ".</yellow>"));
+            }
+            default -> {
+                // Check if args[1] is a category name
+                Category specified = timer.getCategories().get(action);
+                if (specified != null) {
+                    showLeaderboard(sender, specified);
+                } else {
+                    sender.sendMessage(MM.deserialize("<red>Unknown records action or category: " + action + "</red>"));
+                    sender.sendMessage(MM.deserialize("<gray>Usage: /timer records [view|delete|clear|<category>]</gray>"));
+                }
+            }
+        }
+    }
+
+    private void showLeaderboard(CommandSender sender, Category category) {
+        List<RunRecord> runs = timer.getRecordStorage().getTopRuns(category.id());
 
         sender.sendMessage(MM.deserialize("<gray>======================================</gray>"));
-        sender.sendMessage(MM.deserialize("<gold><bold>★ SERVER RECORD: </bold></gold>" + cat.displayName()));
-        if (record == null) {
-            sender.sendMessage(MM.deserialize("<gray>No completed run recorded yet for this category.</gray>"));
+        sender.sendMessage(MM.deserialize("<gold><bold>★ TOP 5 LEADERBOARD: </bold></gold>" + category.displayName()));
+
+        if (runs.isEmpty()) {
+            sender.sendMessage(MM.deserialize("<gray>No completed runs recorded yet for this category.</gray>"));
         } else {
-            sender.sendMessage(MM.deserialize("<white>Total Time: </white><yellow><bold>" + TimeFormatter.formatTime(record.totalTimeMs()) + "</bold></yellow>"));
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
-            sender.sendMessage(MM.deserialize("<white>Date: </white><gray>" + sdf.format(new Date(record.recordedAtEpochMs())) + "</gray>"));
-            sender.sendMessage(MM.deserialize("<white>Team: </white><aqua>" + String.join(", ", record.playerNames()) + "</aqua>"));
-            sender.sendMessage(MM.deserialize("<white>Splits:</white>"));
-            for (Split s : record.splits()) {
-                Long gold = timer.getRecordStorage().getGoldSegment(cat.id(), s.name());
-                boolean isGold = gold != null && s.segmentTimeMs() <= gold;
-                String goldTag = isGold ? " <gold>(GOLD)</gold>" : "";
-                sender.sendMessage(MM.deserialize("  <gray>• " + s.name() + ":</gray> <white>" + TimeFormatter.formatTime(s.cumulativeTimeMs())
-                        + "</white> <gray>[segment: " + TimeFormatter.formatTime(s.segmentTimeMs()) + "]</gray>" + goldTag));
+            for (int i = 0; i < runs.size(); i++) {
+                RunRecord r = runs.get(i);
+                int rank = i + 1;
+                String rankColor = rank == 1 ? "<gold><bold>#1</bold></gold>" : "<yellow>#" + rank + "</yellow>";
+                String dateStr = DATE_FORMAT.format(new Date(r.recordedAtEpochMs()));
+                String teamStr = r.playerNames().isEmpty() ? "Solo" : String.join(", ", r.playerNames());
+
+                sender.sendMessage(MM.deserialize(rankColor + " <white><bold>" + TimeFormatter.formatTime(r.totalTimeMs())
+                        + "</bold></white> <gray>(" + dateStr + ")</gray> <aqua>[" + teamStr + "]</aqua>"));
             }
+            sender.sendMessage(MM.deserialize("<gray>Tip: Use <yellow>/timer records view <#></yellow> to view splits</gray>"));
+            sender.sendMessage(MM.deserialize("<gray>Tip: Use <yellow>/timer records delete <#></yellow> to remove a run</gray>"));
+        }
+        sender.sendMessage(MM.deserialize("<gray>======================================</gray>"));
+    }
+
+    private void showRecordDetails(CommandSender sender, Category category, int rank) {
+        List<RunRecord> runs = timer.getRecordStorage().getTopRuns(category.id());
+        int index = rank - 1;
+        if (index < 0 || index >= runs.size()) {
+            sender.sendMessage(MM.deserialize("<red>Rank #" + rank + " does not exist in the leaderboard.</red>"));
+            return;
+        }
+
+        RunRecord record = runs.get(index);
+        sender.sendMessage(MM.deserialize("<gray>======================================</gray>"));
+        sender.sendMessage(MM.deserialize("<gold><bold>★ RUN #" + rank + ": </bold></gold>" + category.displayName()));
+        sender.sendMessage(MM.deserialize("<white>Total Time: </white><yellow><bold>" + TimeFormatter.formatTime(record.totalTimeMs()) + "</bold></yellow>"));
+        sender.sendMessage(MM.deserialize("<white>Date: </white><gray>" + DATE_FORMAT.format(new Date(record.recordedAtEpochMs())) + "</gray>"));
+        sender.sendMessage(MM.deserialize("<white>Team: </white><aqua>" + String.join(", ", record.playerNames()) + "</aqua>"));
+        sender.sendMessage(MM.deserialize("<white>Splits:</white>"));
+
+        for (Split s : record.splits()) {
+            Long gold = timer.getRecordStorage().getGoldSegment(category.id(), s.name());
+            boolean isGold = gold != null && s.segmentTimeMs() <= gold;
+            String goldTag = isGold ? " <gold>(GOLD)</gold>" : "";
+            sender.sendMessage(MM.deserialize("  <gray>• " + s.name() + ":</gray> <white>" + TimeFormatter.formatTime(s.cumulativeTimeMs())
+                    + "</white> <gray>[segment: " + TimeFormatter.formatTime(s.segmentTimeMs()) + "]</gray>" + goldTag));
         }
         sender.sendMessage(MM.deserialize("<gray>======================================</gray>"));
     }
@@ -146,16 +263,18 @@ public class TimerCommand implements BasicCommand {
         sender.sendMessage(MM.deserialize("<yellow>/timer reset</yellow> <gray>- Reset run</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer toggle</yellow> <gray>- Toggle sidebar scoreboard for yourself</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer category <name></yellow> <gray>- Switch run category</gray>"));
-        sender.sendMessage(MM.deserialize("<yellow>/timer records</yellow> <gray>- View server PB & split records</gray>"));
+        sender.sendMessage(MM.deserialize("<yellow>/timer records</yellow> <gray>- View Top 5 leaderboard</gray>"));
+        sender.sendMessage(MM.deserialize("<yellow>/timer records view <#></yellow> <gray>- View split breakdown for a run</gray>"));
+        sender.sendMessage(MM.deserialize("<yellow>/timer records delete <#></yellow> <gray>- Delete an accidental record</gray>"));
         if (sender.hasPermission("towerspeed.admin")) {
-            sender.sendMessage(MM.deserialize("<yellow>/timer reload</yellow> <gray>- Reload configuration</gray>"));
+            sender.sendMessage(MM.deserialize("<yellow>/timer reload</yellow> <gray>- Reload configuration and records</gray>"));
         }
     }
 
     @Override
     public @NotNull Collection<String> suggest(@NotNull CommandSourceStack source, @NotNull String[] args) {
         if (args.length <= 1) {
-            List<String> subs = new ArrayList<>(List.of("start", "split", "pause", "resume", "reset", "toggle", "category", "records"));
+            List<String> subs = new ArrayList<>(List.of("start", "split", "pause", "resume", "reset", "toggle", "category", "records", "leaderboard"));
             if (source.getSender().hasPermission("towerspeed.admin")) {
                 subs.add("reload");
             }
@@ -166,6 +285,27 @@ public class TimerCommand implements BasicCommand {
         }
         if (args.length == 2 && (args[0].equalsIgnoreCase("category") || args[0].equalsIgnoreCase("cat"))) {
             return filter(new ArrayList<>(timer.getCategories().keySet()), args[1]);
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("records") || args[0].equalsIgnoreCase("record") || args[0].equalsIgnoreCase("leaderboard"))) {
+            List<String> options = new ArrayList<>(List.of("view", "delete", "clear"));
+            options.addAll(timer.getCategories().keySet());
+            return filter(options, args[1]);
+        }
+        if (args.length == 3 && (args[0].equalsIgnoreCase("records") || args[0].equalsIgnoreCase("record") || args[0].equalsIgnoreCase("leaderboard"))) {
+            if (args[1].equalsIgnoreCase("view") || args[1].equalsIgnoreCase("delete") || args[1].equalsIgnoreCase("remove")) {
+                List<String> ranks = List.of("1", "2", "3", "4", "5");
+                List<String> options = new ArrayList<>(ranks);
+                options.addAll(timer.getCategories().keySet());
+                return filter(options, args[2]);
+            }
+            if (args[1].equalsIgnoreCase("clear")) {
+                return filter(new ArrayList<>(timer.getCategories().keySet()), args[2]);
+            }
+        }
+        if (args.length == 4 && (args[0].equalsIgnoreCase("records") || args[0].equalsIgnoreCase("record"))) {
+            if (args[1].equalsIgnoreCase("delete") || args[1].equalsIgnoreCase("remove")) {
+                return filter(List.of("1", "2", "3", "4", "5"), args[3]);
+            }
         }
         return Collections.emptyList();
     }
