@@ -1,0 +1,14 @@
+name: TowerSpeedPlugin
+version: '${version}'
+main: com.towerspeed.TowerSpeedPlugin
+api-version: '1.21'
+description: 'Co-op Speedrun Timer with LiveSplit Sidebar Scoreboard and Global Records'
+authors: [ 'Marcos' ]
+
+permissions:
+  towerspeed.timer:
+    description: Allows controlling the co-op timer (start, split, pause, reset)
+    default: true
+  towerspeed.admin:
+    description: Allows managing categories and resetting records
+    default: op

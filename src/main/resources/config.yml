@@ -1,0 +1,39 @@
+# ========================================================
+#                TowerSpeedPlugin Configuration
+#           Co-op Shared Speedrun Timer & Splits
+# ========================================================
+
+# Active category on server start
+active-category: "tower_climb"
+
+# Sidebar update frequency in ticks (2 ticks = 10 updates per second, smooth tenths of a second)
+update-interval-ticks: 2
+
+# Countdown before starting (in seconds; 0 for instant)
+countdown-seconds: 3
+
+# Play sound cues for countdown, splits, resets, and personal bests
+play-sounds: true
+
+# Spawn celebration fireworks for all players upon setting a new server record
+celebration-fireworks: true
+
+# Pre-configured categories & their sequential splits
+categories:
+  tower_climb:
+    display-name: "<gold><bold>Tower Climb</bold></gold>"
+    splits:
+      - "Floor 10"
+      - "Floor 20"
+      - "Floor 30"
+      - "Floor 40"
+      - "Summit"
+
+  any_percent:
+    display-name: "<aqua><bold>Any% Co-op</bold></aqua>"
+    splits:
+      - "Enter Nether"
+      - "Fortress"
+      - "Bastion"
+      - "Stronghold"
+      - "End Fight"
