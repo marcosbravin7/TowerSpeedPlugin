@@ -37,12 +37,17 @@ public final class TimeFormatter {
      */
     public static String formatDelta(long deltaMillis) {
         long absMillis = Math.abs(deltaMillis);
+        long hours = TimeUnit.MILLISECONDS.toHours(absMillis);
         long minutes = TimeUnit.MILLISECONDS.toMinutes(absMillis) % 60;
         long seconds = TimeUnit.MILLISECONDS.toSeconds(absMillis) % 60;
         long tenths = (absMillis % 1000) / 100;
 
         String sign = deltaMillis < 0 ? "-" : "+";
-        return String.format("%s%02d:%02d.%d", sign, minutes, seconds, tenths);
+        if (hours > 0) {
+            return String.format("%s%02d:%02d:%02d.%d", sign, hours, minutes, seconds, tenths);
+        } else {
+            return String.format("%s%02d:%02d.%d", sign, minutes, seconds, tenths);
+        }
     }
 
     /**

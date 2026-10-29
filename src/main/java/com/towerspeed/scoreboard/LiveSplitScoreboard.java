@@ -8,7 +8,6 @@ import com.towerspeed.util.TimeFormatter;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.scoreboard.*;
 
@@ -134,9 +133,15 @@ public class LiveSplitScoreboard {
         if (bestRun != null) {
             lines.add(MM.deserialize("<white>Record: </white><aqua>" + TimeFormatter.formatTime(bestRun.totalTimeMs()) + "</aqua>"));
             long totalDelta = elapsedMs - bestRun.totalTimeMs();
-            lines.add(MM.deserialize("<white>Delta: </white>" + (totalDelta < 0
-                    ? "<green><bold>" + TimeFormatter.formatDelta(totalDelta) + "</bold></green>"
-                    : "<red><bold>" + TimeFormatter.formatDelta(totalDelta) + "</bold></red>")));
+            String deltaStr;
+            if (totalDelta < 0) {
+                deltaStr = "<green><bold>" + TimeFormatter.formatDelta(totalDelta) + "</bold></green>";
+            } else if (totalDelta > 0) {
+                deltaStr = "<red><bold>" + TimeFormatter.formatDelta(totalDelta) + "</bold></red>";
+            } else {
+                deltaStr = "<gray><bold>±00:00.0</bold></gray>";
+            }
+            lines.add(MM.deserialize("<white>Delta: </white>" + deltaStr));
         } else {
             lines.add(MM.deserialize("<white>Record: </white><dark_gray>No PB set</dark_gray>"));
             lines.add(MM.deserialize("<white>Delta: </white><dark_gray>--:--.-</dark_gray>"));
@@ -157,6 +162,12 @@ public class LiveSplitScoreboard {
      * Internal wrapper for a player's individual flicker-free scoreboard.
      */
     private static class PlayerBoard {
+        private static final String[] LINE_ENTRIES = {
+                "§0§r", "§1§r", "§2§r", "§3§r", "§4§r",
+                "§5§r", "§6§r", "§7§r", "§8§r", "§9§r",
+                "§a§r", "§b§r", "§c§r", "§d§r", "§e§r"
+        };
+
         private final Scoreboard scoreboard;
         private final Objective objective;
         private final Map<Integer, Team> lineTeams = new HashMap<>();
@@ -168,10 +179,9 @@ public class LiveSplitScoreboard {
             this.objective.setDisplaySlot(DisplaySlot.SIDEBAR);
 
             this.entryIdentifiers = new String[MAX_LINES + 1];
-            ChatColor[] colors = ChatColor.values();
 
             for (int i = 1; i <= MAX_LINES; i++) {
-                String entry = colors[(i - 1) % colors.length].toString() + ChatColor.RESET;
+                String entry = LINE_ENTRIES[i - 1];
                 entryIdentifiers[i] = entry;
 
                 Team team = scoreboard.registerNewTeam("line_" + i);

@@ -37,6 +37,7 @@ Designed specifically for **co-op runs** (such as tower climbing, parkour challe
 | :--- | :--- | :--- | :--- |
 | `/timer start [instant]` | | Starts the shared timer (with 3s countdown or instantly) | `towerspeed.timer` (default: all) |
 | `/split [name]` | `/timer split` | Records the next split (or custom-named split) | `towerspeed.timer` (default: all) |
+| `/timer unsplit` | `/unsplit`, `/undo` | Undoes the last recorded split and restores segment | `towerspeed.timer` (default: all) |
 | `/timer pause` | | Pauses the running timer | `towerspeed.timer` (default: all) |
 | `/timer resume` | | Resumes the paused timer | `towerspeed.timer` (default: all) |
 | `/timer reset` | | Resets the timer back to 00:00.0 | `towerspeed.timer` (default: all) |

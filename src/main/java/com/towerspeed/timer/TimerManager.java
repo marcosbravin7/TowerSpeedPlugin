@@ -39,6 +39,7 @@ public class TimerManager {
     private long startTime = 0;
     private long elapsedBeforePause = 0;
     private final List<Split> recordedSplits = new ArrayList<>();
+    private RunRecord lastFinishedRecord = null;
 
     private BukkitTask tickTask;
     private BukkitTask countdownTask;
@@ -124,6 +125,7 @@ public class TimerManager {
         startTime = System.currentTimeMillis();
         elapsedBeforePause = 0;
         recordedSplits.clear();
+        lastFinishedRecord = null;
 
         Component goTitle = MM.deserialize("<green><bold>GO!</bold></green>");
         Title title = Title.title(goTitle, MM.deserialize("<gray>Co-op Timer Started</gray>"),
@@ -237,6 +239,7 @@ public class TimerManager {
         startTime = 0;
         elapsedBeforePause = 0;
         recordedSplits.clear();
+        lastFinishedRecord = null;
         broadcast(MM.deserialize("<red>[Timer] Reset by " + initiator.getName() + ".</red>"));
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (plugin.getConfig().getBoolean("play-sounds", true)) {
@@ -245,9 +248,48 @@ public class TimerManager {
         }
     }
 
+    public synchronized void unsplit(CommandSender initiator) {
+        if (state == TimerState.IDLE || state == TimerState.COUNTDOWN) {
+            initiator.sendMessage(MM.deserialize("<red>Timer is not currently running!</red>"));
+            return;
+        }
+
+        if (recordedSplits.isEmpty()) {
+            initiator.sendMessage(MM.deserialize("<red>No splits have been recorded yet to undo!</red>"));
+            return;
+        }
+
+        if (state == TimerState.FINISHED) {
+            // Revert run completion and remove the saved run record if it made the leaderboard
+            if (lastFinishedRecord != null) {
+                List<RunRecord> topRuns = recordStorage.getTopRuns(currentCategory.id());
+                int index = topRuns.indexOf(lastFinishedRecord);
+                if (index != -1) {
+                    recordStorage.deleteRecord(currentCategory.id(), index + 1);
+                }
+                lastFinishedRecord = null;
+            }
+            state = TimerState.RUNNING;
+            startTime = System.currentTimeMillis();
+        }
+
+        Split removed = recordedSplits.remove(recordedSplits.size() - 1);
+        broadcast(MM.deserialize("<yellow>[Timer] Split <white>" + removed.name() + "</white> undone by " + initiator.getName() + ".</yellow>"));
+
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            p.sendActionBar(MM.deserialize("<yellow>Undid split: <white>" + removed.name() + "</white></yellow>"));
+            if (plugin.getConfig().getBoolean("play-sounds", true)) {
+                p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1f, 1.2f);
+            }
+        }
+    }
+
     private void finishRun() {
+        long totalElapsed = !recordedSplits.isEmpty()
+                ? recordedSplits.get(recordedSplits.size() - 1).cumulativeTimeMs()
+                : getElapsedTime();
+        elapsedBeforePause = totalElapsed;
         state = TimerState.FINISHED;
-        long totalElapsed = getElapsedTime();
 
         List<String> teamPlayerNames = Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
         RunRecord record = new RunRecord(
@@ -257,6 +299,7 @@ public class TimerManager {
                 teamPlayerNames,
                 System.currentTimeMillis()
         );
+        this.lastFinishedRecord = record;
 
         RunRecord previousPB = recordStorage.getBestRun(currentCategory.id());
         int rank = recordStorage.processCompletedRun(record);

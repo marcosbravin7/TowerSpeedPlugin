@@ -2,6 +2,7 @@ package com.towerspeed;
 
 import com.towerspeed.command.SplitCommand;
 import com.towerspeed.command.TimerCommand;
+import com.towerspeed.command.UnsplitCommand;
 import com.towerspeed.scoreboard.LiveSplitScoreboard;
 import com.towerspeed.storage.RecordStorage;
 import com.towerspeed.timer.TimerManager;
@@ -41,6 +42,7 @@ public class TowerSpeedPlugin extends JavaPlugin implements Listener {
             final Commands commands = event.registrar();
             commands.register("timer", "Control the shared co-op speedrun timer", List.of("t"), new TimerCommand(this, timerManager, scoreboard));
             commands.register("split", "Quick command to trigger next split", List.of(), new SplitCommand(timerManager));
+            commands.register("unsplit", "Quick command to undo the last split", List.of("undo"), new UnsplitCommand(timerManager));
         });
 
         // Register scoreboards for all currently online players (e.g. on /reload)

@@ -60,6 +60,13 @@ public class TimerCommand implements BasicCommand {
                 String customName = args.length > 1 ? String.join(" ", Arrays.copyOfRange(args, 1, args.length)) : null;
                 timer.split(sender, customName);
             }
+            case "unsplit", "undo" -> {
+                if (!sender.hasPermission("towerspeed.timer")) {
+                    sender.sendMessage(MM.deserialize("<red>No permission.</red>"));
+                    return;
+                }
+                timer.unsplit(sender);
+            }
             case "pause" -> {
                 if (!sender.hasPermission("towerspeed.timer")) {
                     sender.sendMessage(MM.deserialize("<red>No permission.</red>"));
@@ -258,6 +265,7 @@ public class TimerCommand implements BasicCommand {
         sender.sendMessage(MM.deserialize("<gold><bold>=== TowerSpeed Co-op Timer Commands ===</bold></gold>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer start [instant]</yellow> <gray>- Start run (with 3s countdown or instant)</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer split [name]</yellow> <gray>(or /split) - Record next split</gray>"));
+        sender.sendMessage(MM.deserialize("<yellow>/timer unsplit</yellow> <gray>(or /unsplit) - Undo the last split</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer pause</yellow> <gray>- Pause the running timer</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer resume</yellow> <gray>- Resume the paused timer</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer reset</yellow> <gray>- Reset run</gray>"));
@@ -274,7 +282,7 @@ public class TimerCommand implements BasicCommand {
     @Override
     public @NotNull Collection<String> suggest(@NotNull CommandSourceStack source, @NotNull String[] args) {
         if (args.length <= 1) {
-            List<String> subs = new ArrayList<>(List.of("start", "split", "pause", "resume", "reset", "toggle", "category", "records", "leaderboard"));
+            List<String> subs = new ArrayList<>(List.of("start", "split", "unsplit", "pause", "resume", "reset", "toggle", "category", "records", "leaderboard"));
             if (source.getSender().hasPermission("towerspeed.admin")) {
                 subs.add("reload");
             }

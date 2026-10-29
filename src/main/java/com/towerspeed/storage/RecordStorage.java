@@ -69,6 +69,11 @@ public class RecordStorage {
      * @return 1 if new PB (#1), 2-5 if made leaderboard, -1 if did not make top 5
      */
     public synchronized int processCompletedRun(RunRecord record) {
+        if (record.totalTimeMs() <= 0) {
+            logger.warning("Ignored invalid run with totalTimeMs <= 0");
+            return -1;
+        }
+
         String catId = record.categoryId().toLowerCase();
         CategoryRecords cr = categoryRecordsMap.computeIfAbsent(catId, CategoryRecords::new);
 
@@ -162,6 +167,7 @@ public class RecordStorage {
             try (Reader reader = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
                 CategoryRecords cr = gson.fromJson(reader, CategoryRecords.class);
                 if (cr != null && cr.getCategoryId() != null) {
+                    cr.getTopRuns().removeIf(r -> r.totalTimeMs() <= 0);
                     categoryRecordsMap.put(cr.getCategoryId().toLowerCase(), cr);
                 }
             } catch (Exception e) {
