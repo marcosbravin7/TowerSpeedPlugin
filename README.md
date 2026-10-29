@@ -55,40 +55,37 @@ Designed specifically for **co-op runs** (such as tower climbing, parkour challe
 You can define and customize categories and their sequential split checkpoints in `<server-root>/plugins/TowerSpeedPlugin/config.yml`:
 
 ```yaml
-# Active category when the server starts
-active-category: "tower_climb"
+# Active category on server start
+active-category: "any_percent"
 
-# Sidebar update frequency (2 ticks = 10 updates per second, smooth tenths of a second)
+# Sidebar update frequency in ticks (2 ticks = 10 updates per second, smooth tenths of a second)
 update-interval-ticks: 2
 
-# Countdown before starting (in seconds; set to 0 for instant start)
+# Countdown before starting (in seconds; 0 for instant)
 countdown-seconds: 3
 
-# Play audio cues for countdown, splits, and records
+# Play sound cues for countdown, splits, resets, and personal bests
 play-sounds: true
 
-# Launch fireworks at all players when setting a new #1 record
+# Spawn celebration fireworks for all players upon setting a new server record
 celebration-fireworks: true
 
-# Categories & split checkpoints
+# Pre-configured categories & their sequential splits
 categories:
-  tower_climb:
-    display-name: "<gold><bold>Tower Climb</bold></gold>"
-    splits:
-      - "Floor 10"
-      - "Floor 20"
-      - "Floor 30"
-      - "Floor 40"
-      - "Summit"
-
   any_percent:
     display-name: "<aqua><bold>Any% Co-op</bold></aqua>"
     splits:
-      - "Enter Nether"
+      - "Start"
+      - "Village"
+      - "Nether"
       - "Fortress"
-      - "Bastion"
       - "Stronghold"
       - "End Fight"
+
+  no_splits:
+    display-name: "<aqua><bold>Any% Co-op</bold></aqua>"
+    splits:
+      - "END"
 ```
 *Run `/timer reload` in-game after editing `config.yml` to apply changes immediately.*
 
@@ -99,32 +96,38 @@ categories:
 Records are stored in clean, human-readable JSON files located in:
 ```
 <server-root>/plugins/TowerSpeedPlugin/records/
-├── tower_climb.json
-└── any_percent.json
+├── any_percent.json
+└── no_splits.json
 ```
 
-### Example Record File (`records/tower_climb.json`)
+### Example Record File (`records/any_percent.json`)
 
 ```json
 {
-  "categoryId": "tower_climb",
+  "categoryId": "any_percent",
   "topRuns": [
     {
-      "categoryId": "tower_climb",
-      "totalTimeMs": 252300,
+      "categoryId": "any_percent",
+      "totalTimeMs": 1152300,
       "recordedAtEpochMs": 1793234500000,
       "playerNames": [ "Marcos", "Player2" ],
       "splits": [
-        { "name": "Floor 10", "cumulativeTimeMs": 45100, "segmentTimeMs": 45100 },
-        { "name": "Floor 20", "cumulativeTimeMs": 95200, "segmentTimeMs": 50100 },
-        { "name": "Summit",   "cumulativeTimeMs": 252300, "segmentTimeMs": 157100 }
+        { "name": "Start",      "cumulativeTimeMs": 30000,   "segmentTimeMs": 30000 },
+        { "name": "Village",    "cumulativeTimeMs": 150000,  "segmentTimeMs": 120000 },
+        { "name": "Nether",     "cumulativeTimeMs": 320000,  "segmentTimeMs": 170000 },
+        { "name": "Fortress",   "cumulativeTimeMs": 580000,  "segmentTimeMs": 260000 },
+        { "name": "Stronghold", "cumulativeTimeMs": 910000,  "segmentTimeMs": 330000 },
+        { "name": "End Fight",  "cumulativeTimeMs": 1152300, "segmentTimeMs": 242300 }
       ]
     }
   ],
   "goldSegments": {
-    "Floor 10": 45100,
-    "Floor 20": 48200,
-    "Summit": 157100
+    "Start": 30000,
+    "Village": 110000,
+    "Nether": 165000,
+    "Fortress": 250000,
+    "Stronghold": 320000,
+    "End Fight": 242300
   }
 }
 ```

@@ -4,7 +4,7 @@
 # ========================================================
 
 # Active category on server start
-active-category: "tower_climb"
+active-category: "any_percent"
 
 # Sidebar update frequency in ticks (2 ticks = 10 updates per second, smooth tenths of a second)
 update-interval-ticks: 2
