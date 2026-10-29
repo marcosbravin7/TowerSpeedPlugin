@@ -3,7 +3,7 @@ version: '${version}'
 main: com.towerspeed.TowerSpeedPlugin
 api-version: '1.21'
 description: 'Co-op Speedrun Timer with LiveSplit Sidebar Scoreboard and Global Records'
-authors: [ 'Marcos' ]
+authors: [ 'tacox7' ]
 
 permissions:
   towerspeed.timer:

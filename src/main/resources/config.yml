@@ -20,20 +20,19 @@ celebration-fireworks: true
 
 # Pre-configured categories & their sequential splits
 categories:
-  tower_climb:
-    display-name: "<gold><bold>Tower Climb</bold></gold>"
-    splits:
-      - "Floor 10"
-      - "Floor 20"
-      - "Floor 30"
-      - "Floor 40"
-      - "Summit"
 
   any_percent:
     display-name: "<aqua><bold>Any% Co-op</bold></aqua>"
     splits:
-      - "Enter Nether"
+      - "Start"
+      - "Village"
+      - "Nether"
       - "Fortress"
-      - "Bastion"
       - "Stronghold"
       - "End Fight"
+
+
+  no_splits:
+    display-name: "<aqua><bold>Any% Co-op</bold></aqua>"
+    splits:
+      - "END"
