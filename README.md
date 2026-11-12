@@ -47,6 +47,7 @@ Designed specifically for **co-op runs** (such as tower climbing, parkour challe
 | `/timer records view <#>` | | View detailed split times for a specific ranked run | None (all players) |
 | `/timer records delete <#>` | `/timer records remove` | Deletes an accidental record and recalculates PB | `towerspeed.timer` (default: all) |
 | `/timer records clear [cat]` | | Clears all leaderboard runs and gold splits for a category | `towerspeed.admin` (default: OP) |
+| `/timer worldreset` | | Resets the speedrun world, returns players to the lobby, and prepares a new seed | `towerspeed.admin` (default: OP) |
 | `/timer reload` | | Reloads `config.yml` and all record files from disk | `towerspeed.admin` (default: OP) |
 
 ---

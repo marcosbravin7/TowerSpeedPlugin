@@ -6,6 +6,7 @@ import com.towerspeed.command.UnsplitCommand;
 import com.towerspeed.scoreboard.LiveSplitScoreboard;
 import com.towerspeed.storage.RecordStorage;
 import com.towerspeed.timer.TimerManager;
+import com.towerspeed.world.WorldResetManager;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import org.bukkit.Bukkit;
@@ -23,6 +24,7 @@ public class TowerSpeedPlugin extends JavaPlugin implements Listener {
     private RecordStorage recordStorage;
     private LiveSplitScoreboard scoreboard;
     private TimerManager timerManager;
+    private WorldResetManager worldResetManager;
 
     @Override
     public void onEnable() {
@@ -32,10 +34,13 @@ public class TowerSpeedPlugin extends JavaPlugin implements Listener {
         // Initialize components
         this.recordStorage = new RecordStorage(getDataFolder(), getLogger());
         this.scoreboard = new LiveSplitScoreboard();
+        this.worldResetManager = new WorldResetManager(this);
+        this.worldResetManager.initializeOnStartup();
         this.timerManager = new TimerManager(this, recordStorage, scoreboard);
 
-        // Register event listener for player join/quit
+        // Register event listeners
         getServer().getPluginManager().registerEvents(this, this);
+        getServer().getPluginManager().registerEvents(worldResetManager, this);
 
         // Register modern Paper Brigadier commands via LifecycleEvents
         this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
@@ -60,6 +65,9 @@ public class TowerSpeedPlugin extends JavaPlugin implements Listener {
     public void onDisable() {
         if (timerManager != null) {
             timerManager.stopTicking();
+        }
+        if (worldResetManager != null) {
+            worldResetManager.shutdownCleanup();
         }
         if (recordStorage != null) {
             recordStorage.save();
@@ -90,5 +98,9 @@ public class TowerSpeedPlugin extends JavaPlugin implements Listener {
 
     public RecordStorage getRecordStorage() {
         return recordStorage;
+    }
+
+    public WorldResetManager getWorldResetManager() {
+        return worldResetManager;
     }
 }

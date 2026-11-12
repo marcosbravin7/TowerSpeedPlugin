@@ -117,6 +117,13 @@ public class TimerCommand implements BasicCommand {
                 timer.getRecordStorage().loadAll();
                 sender.sendMessage(MM.deserialize("<green>[Timer] Configuration and records reloaded!</green>"));
             }
+            case "worldreset" -> {
+                if (!sender.hasPermission("towerspeed.admin")) {
+                    sender.sendMessage(MM.deserialize("<red>You do not have permission to reset the world.</red>"));
+                    return;
+                }
+                plugin.getWorldResetManager().triggerWorldReset(sender, timer);
+            }
             default -> sendHelp(sender);
         }
     }
@@ -275,6 +282,7 @@ public class TimerCommand implements BasicCommand {
         sender.sendMessage(MM.deserialize("<yellow>/timer records view <#></yellow> <gray>- View split breakdown for a run</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer records delete <#></yellow> <gray>- Delete an accidental record</gray>"));
         if (sender.hasPermission("towerspeed.admin")) {
+            sender.sendMessage(MM.deserialize("<yellow>/timer worldreset</yellow> <gray>- Reset the speedrun world and return to lobby</gray>"));
             sender.sendMessage(MM.deserialize("<yellow>/timer reload</yellow> <gray>- Reload configuration and records</gray>"));
         }
     }
@@ -284,6 +292,7 @@ public class TimerCommand implements BasicCommand {
         if (args.length <= 1) {
             List<String> subs = new ArrayList<>(List.of("start", "split", "unsplit", "pause", "resume", "reset", "toggle", "category", "records", "leaderboard"));
             if (source.getSender().hasPermission("towerspeed.admin")) {
+                subs.add("worldreset");
                 subs.add("reload");
             }
             return filter(subs, args.length == 0 ? "" : args[0]);

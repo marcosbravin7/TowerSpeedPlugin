@@ -10,5 +10,5 @@ permissions:
     description: Allows controlling the co-op timer (start, split, pause, reset)
     default: true
   towerspeed.admin:
-    description: Allows managing categories and resetting records
+    description: Allows managing categories, resetting records, and resetting the speedrun world
     default: op
