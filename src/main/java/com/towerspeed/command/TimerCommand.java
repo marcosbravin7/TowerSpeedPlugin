@@ -103,6 +103,13 @@ public class TimerCommand implements BasicCommand {
                 }
                 plugin.getWorldResetManager().sendPlayerToLobby(player);
             }
+            case "join", "rejoin", "return", "back" -> {
+                if (!(sender instanceof Player player)) {
+                    sender.sendMessage(MM.deserialize("<red>Only players can join the speedrun world.</red>"));
+                    return;
+                }
+                plugin.getWorldResetManager().sendPlayerToSpeedrun(player);
+            }
             case "category", "cat" -> {
                 if (args.length < 2) {
                     sender.sendMessage(MM.deserialize("<yellow>Current category: " + timer.getCurrentCategory().displayName() + "</yellow>"));
@@ -284,6 +291,7 @@ public class TimerCommand implements BasicCommand {
         sender.sendMessage(MM.deserialize("<yellow>/timer resume</yellow> <gray>- Resume the paused timer</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer reset</yellow> <gray>- Reset run</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer lobby</yellow> <gray>- Return to the lobby world (restores Survival mode)</gray>"));
+        sender.sendMessage(MM.deserialize("<yellow>/timer join</yellow> <gray>(or /timer rejoin) - Join or return to the active speedrun world</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer toggle</yellow> <gray>- Toggle sidebar scoreboard for yourself</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer category <name></yellow> <gray>- Switch run category</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer records</yellow> <gray>- View Top 5 leaderboard</gray>"));
@@ -298,7 +306,7 @@ public class TimerCommand implements BasicCommand {
     @Override
     public @NotNull Collection<String> suggest(@NotNull CommandSourceStack source, @NotNull String[] args) {
         if (args.length <= 1) {
-            List<String> subs = new ArrayList<>(List.of("start", "split", "unsplit", "pause", "resume", "reset", "lobby", "toggle", "category", "records", "leaderboard"));
+            List<String> subs = new ArrayList<>(List.of("start", "split", "unsplit", "pause", "resume", "reset", "lobby", "join", "rejoin", "return", "back", "toggle", "category", "records", "leaderboard"));
             if (source.getSender().hasPermission("towerspeed.admin")) {
                 subs.add("worldreset");
                 subs.add("reload");

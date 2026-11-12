@@ -92,18 +92,21 @@ src/main/
 - **Safety Edge Cases**:
   - Revives dead players (`player.spigot().respawn()`), wakes sleeping players, dismounts vehicles, and removes in-flight `EnderPearl` projectiles before teleporting or unloading worlds.
 
-### 5. Hardcore Mode & `/timer lobby`
+### 5. Hardcore Mode, `/timer lobby` & `/timer join`
 - `createNextSpeedrunOverworld()`, `getOrCreateNether()`, and `getOrCreateTheEnd()` inherit `getLobbyWorld().isHardcore()`.
-- When a player dies in a Hardcore speedrun world (`onPlayerDeath`), they are notified that they can click **Spectate World** to watch teammates or run `/timer lobby` to return to the lobby.
+- When a player dies in a Hardcore speedrun world (`onPlayerDeath`), their Hardcore death is recorded (`hardcore_dead_world_uid` PDC) and they are notified that they can click **Spectate World** to watch teammates or run `/timer lobby` to return to the lobby.
 - `onPlayerRespawn` spawns Hardcore spectators directly at a living teammate's location in the speedrun worlds (falling back to the Overworld spawn).
-- `/timer lobby` (and `evacuatePlayerToLobby`) teleports the player to the lobby spawn and restores `GameMode.SURVIVAL`.
+- `/timer lobby` snapshots the player's current speedrun state (`SavedSpeedrunState`: exact coordinates/dimension, health/hunger, XP/effects, inventory/Ender Chest, and Hardcore spectator status), teleports them to the lobby spawn in `GameMode.SURVIVAL`, and preserves their `active_world_uid` tag.
+- `/timer join` (aliases: `rejoin`, `return`, `back`) returns a player from the lobby to the active speedrun world (`COUNTDOWN`, `RUNNING`, `PAUSED`, or `FINISHED`):
+  - Returning participants have their exact `SavedSpeedrunState` restored (or `GameMode.SPECTATOR` if they died in Hardcore).
+  - Late joiners entering an active run for the first time receive a full `resetPlayerForRun` at the speedrun Overworld spawn.
 
 ### 6. Lobby BossBar & Auto-Hidden Split Scoreboard (`LiveSplitScoreboard.java`)
 - Players in the **Lobby** have their sidebar scoreboard hidden (`objective.setDisplaySlot(null)`) and see a top-of-screen Adventure `BossBar`:
   - `Lobby - Resetting World...` (`RED`, `0%`)
   - `Lobby - Generating World (XX%)` (`YELLOW`, `0%–100%` live chunk pre-gen progress)
   - `Lobby - Ready (/timer start)` (`GREEN`, `100%`)
-  - `Lobby - Run in Progress (MM:SS.d)` / `Lobby - Run Paused (MM:SS.d)` (`BLUE` / `YELLOW`, `100%`)
+  - `Lobby - Run in Progress (MM:SS.d) (/timer join)` / `Lobby - Run Paused (MM:SS.d) (/timer join)` (`BLUE` / `YELLOW`, `100%`)
 - As soon as a player enters a `speedrun_*` world, the BossBar hides and the LiveSplit sidebar scoreboard is displayed (`DisplaySlot.SIDEBAR`).
 
 ---
@@ -117,7 +120,8 @@ src/main/
 | `/timer unsplit` / `/unsplit` | Undoes last split | `towerspeed.timer` |
 | `/timer pause` / `/timer resume` | Pauses or resumes the active timer | `towerspeed.timer` |
 | `/timer reset` | Resets the timer to `00:00.0` in the current world | `towerspeed.timer` |
-| `/timer lobby` | Teleports the caller back to the lobby world and restores `SURVIVAL` mode | `towerspeed.timer` |
+| `/timer lobby` | Saves speedrun state, teleports caller to the lobby world, and restores `SURVIVAL` mode | `towerspeed.timer` |
+| `/timer join` (`rejoin`/`return`/`back`) | Joins or returns to the active speedrun world from the lobby, restoring saved state or resetting late joiners | `towerspeed.timer` |
 | `/timer toggle` | Toggles sidebar scoreboard visibility for the caller | All players |
 | `/timer category <name>` | Switches active speedrun category | `towerspeed.timer` |
 | `/timer records [view\|delete\|clear]` | Views or manages Top 5 leaderboard records | `towerspeed.timer` (`clear` requires `towerspeed.admin`) |

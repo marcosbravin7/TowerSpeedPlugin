@@ -25,6 +25,7 @@ import org.bukkit.event.player.PlayerPortalEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.scheduler.BukkitTask;
@@ -54,6 +55,8 @@ public class WorldResetManager implements Listener {
 
     private final TowerSpeedPlugin plugin;
     private final NamespacedKey activeWorldUidKey;
+    private final NamespacedKey hardcoreDeadWorldUidKey;
+    private final Map<UUID, SavedSpeedrunState> savedRunStates = new HashMap<>();
 
     // Each reset increments worldIndex and uses a fresh directory (e.g. speedrun_1, speedrun_2)
     // so Windows file locks on old region/level.dat files can never cause Bukkit to reuse the old seed.
@@ -75,9 +78,39 @@ public class WorldResetManager implements Listener {
 
     private record ChunkOffset(int dx, int dz, int distSq) {}
 
+    private record SavedSpeedrunState(
+            UUID overworldUid,
+            String worldName,
+            double x,
+            double y,
+            double z,
+            float yaw,
+            float pitch,
+            GameMode gameMode,
+            boolean hardcoreDead,
+            double health,
+            double absorption,
+            int foodLevel,
+            float saturation,
+            float exhaustion,
+            int fireTicks,
+            int freezeTicks,
+            int remainingAir,
+            float fallDistance,
+            int expLevel,
+            float expProgress,
+            int totalExp,
+            List<PotionEffect> potionEffects,
+            ItemStack[] inventoryContents,
+            ItemStack[] armorContents,
+            @Nullable ItemStack offHandItem,
+            ItemStack[] enderChestContents
+    ) {}
+
     public WorldResetManager(TowerSpeedPlugin plugin) {
         this.plugin = plugin;
         this.activeWorldUidKey = new NamespacedKey(plugin, "active_world_uid");
+        this.hardcoreDeadWorldUidKey = new NamespacedKey(plugin, "hardcore_dead_world_uid");
     }
 
     /**
@@ -168,6 +201,7 @@ public class WorldResetManager implements Listener {
         cancelPreGeneration();
         resetInProgress = true;
         worldFreshlyPrepared = false;
+        savedRunStates.clear();
 
         // Reset the timer if it isn't already idle
         if (timerManager.getState() != TimerState.IDLE) {
@@ -449,14 +483,256 @@ public class WorldResetManager implements Listener {
 
     /**
      * Handles /timer lobby for a player to return to the lobby in SURVIVAL mode.
+     * If a run is currently active, snapshots the player's exact speedrun state so they can rejoin via /timer join.
      */
     public void sendPlayerToLobby(Player player) {
         if (!isSpeedrunWorld(player.getWorld())) {
             player.sendMessage(MM.deserialize("<yellow>[Timer] You are already in the lobby!</yellow>"));
             return;
         }
-        evacuatePlayerToLobby(player);
-        player.sendMessage(MM.deserialize("<green>[Timer] Returned to the lobby.</green>"));
+
+        World overworld = getActiveOverworld();
+        TimerState state = plugin.getTimerManager().getState();
+        if (overworld != null && !resetInProgress && state != TimerState.IDLE) {
+            savePlayerSpeedrunState(player, overworld);
+            movePlayerToLobbyPreservingRunTag(player);
+            player.sendMessage(MM.deserialize("<green>[Timer] Returned to the lobby. Use <yellow>/timer join</yellow> to return to the speedrun world.</green>"));
+        } else {
+            evacuatePlayerToLobby(player);
+            player.sendMessage(MM.deserialize("<green>[Timer] Returned to the lobby.</green>"));
+        }
+    }
+
+    /**
+     * Handles /timer join (rejoin, return, back) for a player in the lobby to enter or return to the speedrun world.
+     */
+    public void sendPlayerToSpeedrun(Player player) {
+        if (isSpeedrunWorld(player.getWorld())) {
+            player.sendMessage(MM.deserialize("<yellow>[Timer] You are already in the speedrun world!</yellow>"));
+            return;
+        }
+
+        if (resetInProgress) {
+            player.sendMessage(MM.deserialize("<red>[Timer] A world reset is currently in progress! Please wait...</red>"));
+            return;
+        }
+
+        if (pregenInProgress) {
+            player.sendMessage(MM.deserialize("<red>[Timer] World is still pre-generating spawn chunks (<yellow>"
+                    + getPreGenPercent() + "%</yellow>)! Please wait until it reaches 100%.</red>"));
+            return;
+        }
+
+        TimerState state = plugin.getTimerManager().getState();
+        if (state == TimerState.IDLE) {
+            player.sendMessage(MM.deserialize("<yellow>[Timer] No speedrun is currently active! Use <white>/timer start</white> to begin the run.</yellow>"));
+            return;
+        }
+
+        World overworld = getActiveOverworld();
+        if (overworld == null) {
+            player.sendMessage(MM.deserialize("<red>[Timer] The speedrun world is not currently loaded.</red>"));
+            return;
+        }
+
+        if (isPlayerPreparedForWorld(player, overworld)) {
+            restorePlayerToSpeedrun(player, overworld, true);
+        } else if (state == TimerState.FINISHED) {
+            if (player.isDead()) {
+                player.spigot().respawn();
+            }
+            player.leaveVehicle();
+            player.teleport(overworld.getSpawnLocation());
+            player.setGameMode(GameMode.SPECTATOR);
+            player.sendMessage(MM.deserialize("<green>[Timer] Joined the finished speedrun world as a spectator.</green>"));
+        } else {
+            // Late joiner entering an active run (COUNTDOWN, RUNNING, or PAUSED) for the first time
+            resetPlayerForRun(player, overworld);
+            player.teleport(overworld.getSpawnLocation());
+            player.sendMessage(MM.deserialize("<green>[Timer] Joined the active speedrun!</green>"));
+        }
+    }
+
+    private void savePlayerSpeedrunState(Player player, World overworld) {
+        boolean diedInHardcore = isHardcoreDead(player, overworld)
+                || (overworld.isHardcore() && (player.isDead() || player.getGameMode() == GameMode.SPECTATOR));
+        if (diedInHardcore) {
+            markHardcoreDead(player, overworld);
+        }
+
+        if (player.isDead()) {
+            player.spigot().respawn();
+        }
+        if (player.isSleeping()) {
+            player.wakeup(false);
+        }
+        player.leaveVehicle();
+        cancelEnderPearlsByPlayer(player);
+        player.closeInventory();
+
+        Location loc = player.getLocation();
+        World locWorld = loc.getWorld();
+        String worldName = (locWorld != null && isSpeedrunWorld(locWorld)) ? locWorld.getName() : overworld.getName();
+
+        GameMode savedMode = diedInHardcore ? GameMode.SPECTATOR : player.getGameMode();
+        ItemStack offHand = player.getInventory().getItemInOffHand();
+        ItemStack clonedOffHand = (!offHand.getType().isAir()) ? offHand.clone() : null;
+
+        SavedSpeedrunState snapshot = new SavedSpeedrunState(
+                overworld.getUID(),
+                worldName,
+                loc.getX(),
+                loc.getY(),
+                loc.getZ(),
+                loc.getYaw(),
+                loc.getPitch(),
+                savedMode,
+                diedInHardcore,
+                player.getHealth(),
+                player.getAbsorptionAmount(),
+                player.getFoodLevel(),
+                player.getSaturation(),
+                player.getExhaustion(),
+                player.getFireTicks(),
+                player.getFreezeTicks(),
+                player.getRemainingAir(),
+                player.getFallDistance(),
+                player.getLevel(),
+                player.getExp(),
+                player.getTotalExperience(),
+                new ArrayList<>(player.getActivePotionEffects()),
+                cloneItems(player.getInventory().getContents()),
+                cloneItems(player.getInventory().getArmorContents()),
+                clonedOffHand,
+                cloneItems(player.getEnderChest().getContents())
+        );
+        savedRunStates.put(player.getUniqueId(), snapshot);
+    }
+
+    private void restorePlayerToSpeedrun(Player player, World overworld, boolean sendFeedback) {
+        if (player.isDead()) {
+            player.spigot().respawn();
+        }
+        if (player.isSleeping()) {
+            player.wakeup(false);
+        }
+        player.leaveVehicle();
+        cancelEnderPearlsByPlayer(player);
+        player.closeInventory();
+
+        SavedSpeedrunState saved = savedRunStates.remove(player.getUniqueId());
+        boolean hardcoreDead = isHardcoreDead(player, overworld)
+                || (saved != null && saved.overworldUid().equals(overworld.getUID())
+                && (saved.hardcoreDead() || (overworld.isHardcore() && saved.gameMode() == GameMode.SPECTATOR)));
+
+        if (saved != null && saved.overworldUid().equals(overworld.getUID())) {
+            World targetWorld = Bukkit.getWorld(saved.worldName());
+            if (targetWorld == null) {
+                if (saved.worldName().equals(activeNetherName)) {
+                    targetWorld = getOrCreateNether();
+                } else if (saved.worldName().equals(activeEndName)) {
+                    targetWorld = getOrCreateTheEnd();
+                }
+            }
+
+            Location targetLoc;
+            if (targetWorld != null && isSpeedrunWorld(targetWorld)) {
+                targetLoc = new Location(targetWorld, saved.x(), saved.y(), saved.z(), saved.yaw(), saved.pitch());
+            } else {
+                targetLoc = hardcoreDead ? findLivingTeammateOrSpawn(player, overworld) : overworld.getSpawnLocation();
+            }
+
+            player.teleport(targetLoc);
+
+            // Restore inventory, equipment, and ender chest
+            player.getInventory().setContents(cloneItems(saved.inventoryContents()));
+            player.getInventory().setArmorContents(cloneItems(saved.armorContents()));
+            player.getInventory().setItemInOffHand(saved.offHandItem() != null ? saved.offHandItem().clone() : null);
+            player.setItemOnCursor(null);
+            player.getEnderChest().setContents(cloneItems(saved.enderChestContents()));
+
+            // Restore XP and active potion effects
+            player.setLevel(saved.expLevel());
+            player.setExp(saved.expProgress());
+            player.setTotalExperience(saved.totalExp());
+            for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) {
+                player.removePotionEffect(effect.getType());
+            }
+            for (PotionEffect effect : saved.potionEffects()) {
+                player.addPotionEffect(effect);
+            }
+
+            if (hardcoreDead) {
+                player.setGameMode(GameMode.SPECTATOR);
+                player.setFireTicks(0);
+                player.setFreezeTicks(0);
+                player.setFallDistance(0f);
+                player.setVelocity(new Vector(0, 0, 0));
+                if (sendFeedback) {
+                    player.sendMessage(MM.deserialize("<green>[Timer] Rejoined the speedrun world as a spectator.</green>"));
+                }
+            } else {
+                player.setGameMode(saved.gameMode());
+                AttributeInstance maxHealthAttr = player.getAttribute(Attribute.MAX_HEALTH);
+                double maxHealth = (maxHealthAttr != null) ? maxHealthAttr.getValue() : 20.0;
+                player.setHealth(Math.clamp(saved.health(), 0.5, maxHealth));
+                player.setAbsorptionAmount(Math.max(0.0, saved.absorption()));
+                player.setFoodLevel(saved.foodLevel());
+                player.setSaturation(saved.saturation());
+                player.setExhaustion(saved.exhaustion());
+                player.setFireTicks(saved.fireTicks());
+                player.setFreezeTicks(saved.freezeTicks());
+                player.setRemainingAir(saved.remainingAir());
+                player.setFallDistance(saved.fallDistance());
+                player.setVelocity(new Vector(0, 0, 0));
+                if (sendFeedback) {
+                    player.sendMessage(MM.deserialize("<green>[Timer] Rejoined the speedrun world!</green>"));
+                }
+            }
+        } else {
+            // Fallback if no in-memory snapshot was present
+            if (hardcoreDead) {
+                player.teleport(findLivingTeammateOrSpawn(player, overworld));
+                player.setGameMode(GameMode.SPECTATOR);
+                if (sendFeedback) {
+                    player.sendMessage(MM.deserialize("<green>[Timer] Rejoined the speedrun world as a spectator.</green>"));
+                }
+            } else {
+                Location target = player.getRespawnLocation();
+                if (target == null || target.getWorld() == null || !isSpeedrunWorld(target.getWorld())) {
+                    target = overworld.getSpawnLocation();
+                }
+                player.teleport(target);
+                player.setGameMode(GameMode.SURVIVAL);
+                if (sendFeedback) {
+                    player.sendMessage(MM.deserialize("<green>[Timer] Rejoined the speedrun world!</green>"));
+                }
+            }
+        }
+    }
+
+    private void movePlayerToLobbyPreservingRunTag(Player player) {
+        if (player.isDead()) {
+            player.spigot().respawn();
+        }
+        if (player.isSleeping()) {
+            player.wakeup(false);
+        }
+        player.leaveVehicle();
+        cancelEnderPearlsByPlayer(player);
+        player.closeInventory();
+
+        player.setGameMode(GameMode.SURVIVAL);
+        player.setFallDistance(0f);
+        player.setFireTicks(0);
+        player.setFreezeTicks(0);
+        player.setVelocity(new Vector(0, 0, 0));
+        restoreFullHealthAndFood(player);
+
+        Location lobbySpawn = getLobbySpawn();
+        if (!player.getWorld().equals(lobbySpawn.getWorld()) || player.getLocation().distanceSquared(lobbySpawn) > 4.0) {
+            player.teleport(lobbySpawn);
+        }
     }
 
     /**
@@ -571,6 +847,8 @@ public class WorldResetManager implements Listener {
         restoreFullHealthAndFood(player);
 
         player.getPersistentDataContainer().remove(activeWorldUidKey);
+        player.getPersistentDataContainer().remove(hardcoreDeadWorldUidKey);
+        savedRunStates.remove(player.getUniqueId());
 
         Location lobbySpawn = getLobbySpawn();
         if (!player.getWorld().equals(lobbySpawn.getWorld()) || player.getLocation().distanceSquared(lobbySpawn) > 4.0) {
@@ -630,12 +908,14 @@ public class WorldResetManager implements Listener {
             }
         }
 
-        // Record the active speedrun world UID on the player so mid-run reconnects preserve state
+        // Record the active speedrun world UID on the player and clear any old Hardcore death / saved lobby state
         player.getPersistentDataContainer().set(
                 activeWorldUidKey,
                 PersistentDataType.STRING,
                 speedrunOverworld.getUID().toString()
         );
+        player.getPersistentDataContainer().remove(hardcoreDeadWorldUidKey);
+        savedRunStates.remove(player.getUniqueId());
     }
 
     private void restoreFullHealthAndFood(Player player) {
@@ -650,6 +930,42 @@ public class WorldResetManager implements Listener {
     private boolean isPlayerPreparedForWorld(Player player, World speedrunOverworld) {
         String storedUid = player.getPersistentDataContainer().get(activeWorldUidKey, PersistentDataType.STRING);
         return storedUid != null && storedUid.equals(speedrunOverworld.getUID().toString());
+    }
+
+    private boolean isHardcoreDead(Player player, World speedrunOverworld) {
+        String storedUid = player.getPersistentDataContainer().get(hardcoreDeadWorldUidKey, PersistentDataType.STRING);
+        return storedUid != null && storedUid.equals(speedrunOverworld.getUID().toString());
+    }
+
+    private void markHardcoreDead(Player player, World speedrunOverworld) {
+        player.getPersistentDataContainer().set(
+                hardcoreDeadWorldUidKey,
+                PersistentDataType.STRING,
+                speedrunOverworld.getUID().toString()
+        );
+    }
+
+    private Location findLivingTeammateOrSpawn(Player player, World overworld) {
+        for (Player teammate : Bukkit.getOnlinePlayers()) {
+            if (!teammate.equals(player)
+                    && !teammate.isDead()
+                    && teammate.getGameMode() == GameMode.SURVIVAL
+                    && isSpeedrunWorld(teammate.getWorld())) {
+                return teammate.getLocation();
+            }
+        }
+        return overworld.getSpawnLocation();
+    }
+
+    private static ItemStack[] cloneItems(@Nullable ItemStack[] items) {
+        if (items == null) {
+            return new ItemStack[0];
+        }
+        ItemStack[] copy = new ItemStack[items.length];
+        for (int i = 0; i < items.length; i++) {
+            copy[i] = items[i] != null ? items[i].clone() : null;
+        }
+        return copy;
     }
 
     private void cancelEnderPearlsInWorld(World world) {
@@ -725,9 +1041,10 @@ public class WorldResetManager implements Listener {
         // If a run is active (COUNTDOWN, RUNNING, PAUSED) or FINISHED:
         if (isPlayerPreparedForWorld(player, overworld)) {
             // Player is reconnecting to the SAME active run they were already part of.
-            // Only teleport them to speedrun spawn if Paper placed them in the lobby (e.g. if their dimension unloaded).
             if (!isSpeedrunWorld(player.getWorld())) {
-                player.teleport(overworld.getSpawnLocation());
+                restorePlayerToSpeedrun(player, overworld, false);
+            } else if (isHardcoreDead(player, overworld)) {
+                player.setGameMode(GameMode.SPECTATOR);
             }
         } else if (state == TimerState.COUNTDOWN || state == TimerState.RUNNING || state == TimerState.PAUSED) {
             // Player is joining a new run for the first time (late joiner or logged out during an older run)
@@ -753,6 +1070,10 @@ public class WorldResetManager implements Listener {
     public void onPlayerDeath(PlayerDeathEvent event) {
         Player player = event.getPlayer();
         if (isSpeedrunWorld(player.getWorld()) && player.getWorld().isHardcore()) {
+            World overworld = getActiveOverworld();
+            if (overworld != null) {
+                markHardcoreDead(player, overworld);
+            }
             player.sendMessage(MM.deserialize("<gold>[Timer]</gold> <yellow>You died in Hardcore! Click <white><bold>Spectate World</bold></white> to watch your teammates, or use <aqua>/timer lobby</aqua> to return to the lobby.</yellow>"));
         }
     }
@@ -773,16 +1094,7 @@ public class WorldResetManager implements Listener {
 
         // In Hardcore mode, spawn the spectating player near a living teammate in the speedrun worlds (or at speedrun spawn)
         if (overworld.isHardcore()) {
-            for (Player teammate : Bukkit.getOnlinePlayers()) {
-                if (!teammate.equals(player)
-                        && !teammate.isDead()
-                        && teammate.getGameMode() == GameMode.SURVIVAL
-                        && isSpeedrunWorld(teammate.getWorld())) {
-                    event.setRespawnLocation(teammate.getLocation());
-                    return;
-                }
-            }
-            event.setRespawnLocation(overworld.getSpawnLocation());
+            event.setRespawnLocation(findLivingTeammateOrSpawn(player, overworld));
             return;
         }
 

@@ -229,12 +229,12 @@ public class LiveSplitScoreboard {
             TimerState state = timer.getState();
             if (state == TimerState.RUNNING || state == TimerState.COUNTDOWN) {
                 lobbyBossBar.name(MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <aqua>Run in Progress ("
-                        + TimeFormatter.formatTime(timer.getElapsedTime()) + ")</aqua>"));
+                        + TimeFormatter.formatTime(timer.getElapsedTime()) + ") (/timer join)</aqua>"));
                 lobbyBossBar.color(BossBar.Color.BLUE);
                 lobbyBossBar.progress(1.0f);
             } else if (state == TimerState.PAUSED) {
                 lobbyBossBar.name(MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <yellow>Run Paused ("
-                        + TimeFormatter.formatTime(timer.getElapsedTime()) + ")</yellow>"));
+                        + TimeFormatter.formatTime(timer.getElapsedTime()) + ") (/timer join)</yellow>"));
                 lobbyBossBar.color(BossBar.Color.YELLOW);
                 lobbyBossBar.progress(1.0f);
             } else {
