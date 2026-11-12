@@ -4,7 +4,10 @@ import com.towerspeed.timer.Category;
 import com.towerspeed.timer.RunRecord;
 import com.towerspeed.timer.Split;
 import com.towerspeed.timer.TimerManager;
+import com.towerspeed.timer.TimerState;
 import com.towerspeed.util.TimeFormatter;
+import com.towerspeed.world.WorldResetManager;
+import net.kyori.adventure.bossbar.BossBar;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
@@ -14,32 +17,64 @@ import org.bukkit.scoreboard.*;
 import java.util.*;
 
 /**
- * Manages zero-flicker LiveSplit sidebar scoreboards for online co-op players.
+ * Manages zero-flicker LiveSplit sidebar scoreboards for players in speedrun worlds
+ * and a status BossBar for players waiting in the lobby.
  */
 public class LiveSplitScoreboard {
 
     private static final MiniMessage MM = MiniMessage.miniMessage();
     private static final int MAX_LINES = 15;
 
+    private final WorldResetManager worldResetManager;
     private final ScoreboardManager scoreboardManager;
     private final Map<UUID, PlayerBoard> playerBoards = new HashMap<>();
     private final Set<UUID> disabledPlayers = new HashSet<>();
 
-    public LiveSplitScoreboard() {
+    private final BossBar lobbyBossBar;
+    private final Set<UUID> bossBarViewers = new HashSet<>();
+
+    public LiveSplitScoreboard(WorldResetManager worldResetManager) {
+        this.worldResetManager = worldResetManager;
         this.scoreboardManager = Bukkit.getScoreboardManager();
+        this.lobbyBossBar = BossBar.bossBar(
+                MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <green>Ready (/timer start)</green>"),
+                1.0f,
+                BossBar.Color.GREEN,
+                BossBar.Overlay.PROGRESS
+        );
     }
 
     public void registerPlayer(Player player) {
+        boolean inLobby = !worldResetManager.isSpeedrunWorld(player.getWorld());
+        if (inLobby) {
+            if (bossBarViewers.add(player.getUniqueId())) {
+                player.showBossBar(lobbyBossBar);
+            }
+        }
+
         if (disabledPlayers.contains(player.getUniqueId())) {
             return;
         }
         PlayerBoard board = new PlayerBoard(scoreboardManager.getNewScoreboard());
+        board.setSidebarVisible(!inLobby);
         player.setScoreboard(board.scoreboard);
         playerBoards.put(player.getUniqueId(), board);
     }
 
     public void unregisterPlayer(Player player) {
-        playerBoards.remove(player.getUniqueId());
+        UUID uuid = player.getUniqueId();
+        playerBoards.remove(uuid);
+        if (bossBarViewers.remove(uuid)) {
+            player.hideBossBar(lobbyBossBar);
+        }
+    }
+
+    public void cleanup() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            player.hideBossBar(lobbyBossBar);
+        }
+        bossBarViewers.clear();
+        playerBoards.clear();
     }
 
     public boolean togglePlayer(Player player) {
@@ -57,9 +92,11 @@ public class LiveSplitScoreboard {
     }
 
     /**
-     * Updates scoreboard contents for all active players.
+     * Updates the Lobby BossBar and LiveSplit sidebar scoreboards for all online players.
      */
     public void update(TimerManager timer) {
+        updateLobbyBossBar(timer);
+
         Category category = timer.getCurrentCategory();
         RunRecord bestRun = timer.getRecordStorage().getBestRun(category.id());
 
@@ -112,7 +149,7 @@ public class LiveSplitScoreboard {
                     }
                 }
                 lines.add(MM.deserialize(lineText));
-            } else if (i == currentSplitIdx && timer.getState() == com.towerspeed.timer.TimerState.RUNNING) {
+            } else if (i == currentSplitIdx && timer.getState() == TimerState.RUNNING) {
                 // Active split currently in progress
                 long segmentElapsed = elapsedMs - (recordedSplits.isEmpty() ? 0 : recordedSplits.get(recordedSplits.size() - 1).cumulativeTimeMs());
                 lines.add(MM.deserialize("<yellow>▶ </yellow><white><bold>" + splitName + "</bold></white> <yellow>" + TimeFormatter.formatTime(segmentElapsed) + "</yellow>"));
@@ -151,10 +188,64 @@ public class LiveSplitScoreboard {
         lines.add(MM.deserialize("<white>Status: </white>" + timer.getState().getDisplayTag()));
         lines.add(MM.deserialize("<gray><st>-------------------</st></gray>"));
 
-        // Update each player's board
         Component title = MM.deserialize(category.displayName());
-        for (PlayerBoard board : playerBoards.values()) {
-            board.updateLines(title, lines);
+
+        // Update visibility and content for each online player based on whether they are in the lobby or speedrun world
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            UUID uuid = player.getUniqueId();
+            boolean inLobby = !worldResetManager.isSpeedrunWorld(player.getWorld());
+            PlayerBoard board = playerBoards.get(uuid);
+
+            if (inLobby) {
+                if (board != null) {
+                    board.setSidebarVisible(false);
+                }
+                if (bossBarViewers.add(uuid)) {
+                    player.showBossBar(lobbyBossBar);
+                }
+            } else {
+                if (bossBarViewers.remove(uuid)) {
+                    player.hideBossBar(lobbyBossBar);
+                }
+                if (board != null) {
+                    board.setSidebarVisible(true);
+                    board.updateLines(title, lines);
+                }
+            }
+        }
+    }
+
+    private void updateLobbyBossBar(TimerManager timer) {
+        if (worldResetManager.isResetInProgress()) {
+            lobbyBossBar.name(MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <red>Resetting World...</red>"));
+            lobbyBossBar.color(BossBar.Color.RED);
+            lobbyBossBar.progress(0.0f);
+        } else if (worldResetManager.isPreGenInProgress()) {
+            int pct = worldResetManager.getPreGenPercent();
+            lobbyBossBar.name(MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <yellow>Generating World (" + pct + "%)</yellow>"));
+            lobbyBossBar.color(BossBar.Color.YELLOW);
+            lobbyBossBar.progress(worldResetManager.getPreGenProgress());
+        } else {
+            TimerState state = timer.getState();
+            if (state == TimerState.RUNNING || state == TimerState.COUNTDOWN) {
+                lobbyBossBar.name(MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <aqua>Run in Progress ("
+                        + TimeFormatter.formatTime(timer.getElapsedTime()) + ") (/timer join)</aqua>"));
+                lobbyBossBar.color(BossBar.Color.BLUE);
+                lobbyBossBar.progress(1.0f);
+            } else if (state == TimerState.PAUSED) {
+                lobbyBossBar.name(MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <yellow>Run Paused ("
+                        + TimeFormatter.formatTime(timer.getElapsedTime()) + ") (/timer join)</yellow>"));
+                lobbyBossBar.color(BossBar.Color.YELLOW);
+                lobbyBossBar.progress(1.0f);
+            } else {
+                String modeBadge = worldResetManager.isSpeedrunHardcore()
+                        ? "<red>[HARDCORE]</red>"
+                        : "<gray>[" + worldResetManager.getEffectiveSpeedrunDifficulty().name() + "]</gray>";
+                lobbyBossBar.name(MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <green>Ready</green> "
+                        + modeBadge + " <green>(/timer start)</green>"));
+                lobbyBossBar.color(BossBar.Color.GREEN);
+                lobbyBossBar.progress(1.0f);
+            }
         }
     }
 
@@ -172,6 +263,7 @@ public class LiveSplitScoreboard {
         private final Objective objective;
         private final Map<Integer, Team> lineTeams = new HashMap<>();
         private final String[] entryIdentifiers;
+        private boolean sidebarVisible = true;
 
         public PlayerBoard(Scoreboard scoreboard) {
             this.scoreboard = scoreboard;
@@ -191,6 +283,14 @@ public class LiveSplitScoreboard {
                 Score score = objective.getScore(entry);
                 score.setScore(i);
             }
+        }
+
+        public void setSidebarVisible(boolean visible) {
+            if (this.sidebarVisible == visible) {
+                return;
+            }
+            this.sidebarVisible = visible;
+            objective.setDisplaySlot(visible ? DisplaySlot.SIDEBAR : null);
         }
 
         public void updateLines(Component title, List<Component> contentLines) {

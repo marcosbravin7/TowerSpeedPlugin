@@ -10,6 +10,7 @@ import com.towerspeed.util.TimeFormatter;
 import io.papermc.paper.command.brigadier.BasicCommand;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.Difficulty;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
@@ -96,6 +97,20 @@ public class TimerCommand implements BasicCommand {
                 boolean visible = scoreboard.togglePlayer(player);
                 player.sendMessage(MM.deserialize("<yellow>[Timer] Scoreboard visibility: " + (visible ? "<green>Visible</green>" : "<red>Hidden</red>") + "</yellow>"));
             }
+            case "lobby" -> {
+                if (!(sender instanceof Player player)) {
+                    sender.sendMessage(MM.deserialize("<red>Only players can teleport to the lobby.</red>"));
+                    return;
+                }
+                plugin.getWorldResetManager().sendPlayerToLobby(player);
+            }
+            case "join", "rejoin", "return", "back" -> {
+                if (!(sender instanceof Player player)) {
+                    sender.sendMessage(MM.deserialize("<red>Only players can join the speedrun world.</red>"));
+                    return;
+                }
+                plugin.getWorldResetManager().sendPlayerToSpeedrun(player);
+            }
             case "category", "cat" -> {
                 if (args.length < 2) {
                     sender.sendMessage(MM.deserialize("<yellow>Current category: " + timer.getCurrentCategory().displayName() + "</yellow>"));
@@ -114,8 +129,68 @@ public class TimerCommand implements BasicCommand {
                 }
                 plugin.reloadConfig();
                 timer.loadFromConfig();
+                plugin.getWorldResetManager().loadSettingsFromConfig();
                 timer.getRecordStorage().loadAll();
                 sender.sendMessage(MM.deserialize("<green>[Timer] Configuration and records reloaded!</green>"));
+            }
+            case "worldreset" -> {
+                if (!sender.hasPermission("towerspeed.admin")) {
+                    sender.sendMessage(MM.deserialize("<red>You do not have permission to reset the world.</red>"));
+                    return;
+                }
+                plugin.getWorldResetManager().triggerWorldReset(sender, timer);
+            }
+            case "hardcore", "hc" -> {
+                if (!sender.hasPermission("towerspeed.admin")) {
+                    sender.sendMessage(MM.deserialize("<red>You do not have permission to change Hardcore mode.</red>"));
+                    return;
+                }
+                var wrm = plugin.getWorldResetManager();
+                if (args.length < 2) {
+                    boolean current = wrm.isSpeedrunHardcore();
+                    sender.sendMessage(MM.deserialize("<yellow>[Timer] Speedrun Hardcore mode is currently: "
+                            + (current ? "<red><bold>ON</bold></red>" : "<green><bold>OFF</bold></green>") + "</yellow>"));
+                    sender.sendMessage(MM.deserialize("<gray>Usage: /timer hardcore <on|off|toggle></gray>"));
+                    return;
+                }
+                String opt = args[1].toLowerCase();
+                boolean target;
+                switch (opt) {
+                    case "on", "true", "enable", "enabled" -> target = true;
+                    case "off", "false", "disable", "disabled" -> target = false;
+                    case "toggle" -> target = !wrm.isSpeedrunHardcore();
+                    default -> {
+                        sender.sendMessage(MM.deserialize("<red>Invalid option. Usage: /timer hardcore <on|off|toggle></red>"));
+                        return;
+                    }
+                }
+                wrm.setSpeedrunHardcore(target, sender);
+            }
+            case "difficulty", "diff" -> {
+                if (!sender.hasPermission("towerspeed.admin")) {
+                    sender.sendMessage(MM.deserialize("<red>You do not have permission to change speedrun difficulty.</red>"));
+                    return;
+                }
+                var wrm = plugin.getWorldResetManager();
+                if (args.length < 2) {
+                    sender.sendMessage(MM.deserialize("<yellow>[Timer] Speedrun difficulty is currently: <white><bold>"
+                            + wrm.getEffectiveSpeedrunDifficulty().name() + "</bold></white>"
+                            + (wrm.isSpeedrunHardcore() ? " <red>(Hardcore)</red>" : "") + "</yellow>"));
+                    sender.sendMessage(MM.deserialize("<gray>Usage: /timer difficulty <easy|normal|hard></gray>"));
+                    return;
+                }
+                String diffArg = args[1].toUpperCase();
+                Difficulty targetDiff;
+                switch (diffArg) {
+                    case "EASY" -> targetDiff = Difficulty.EASY;
+                    case "NORMAL" -> targetDiff = Difficulty.NORMAL;
+                    case "HARD" -> targetDiff = Difficulty.HARD;
+                    default -> {
+                        sender.sendMessage(MM.deserialize("<red>Invalid difficulty. Choose from: <yellow>easy, normal, hard</yellow></red>"));
+                        return;
+                    }
+                }
+                wrm.setSpeedrunDifficulty(targetDiff, sender);
             }
             default -> sendHelp(sender);
         }
@@ -269,12 +344,17 @@ public class TimerCommand implements BasicCommand {
         sender.sendMessage(MM.deserialize("<yellow>/timer pause</yellow> <gray>- Pause the running timer</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer resume</yellow> <gray>- Resume the paused timer</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer reset</yellow> <gray>- Reset run</gray>"));
+        sender.sendMessage(MM.deserialize("<yellow>/timer lobby</yellow> <gray>- Return to the lobby world (restores Survival mode)</gray>"));
+        sender.sendMessage(MM.deserialize("<yellow>/timer join</yellow> <gray>(or /timer rejoin) - Join or return to the active speedrun world</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer toggle</yellow> <gray>- Toggle sidebar scoreboard for yourself</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer category <name></yellow> <gray>- Switch run category</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer records</yellow> <gray>- View Top 5 leaderboard</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer records view <#></yellow> <gray>- View split breakdown for a run</gray>"));
         sender.sendMessage(MM.deserialize("<yellow>/timer records delete <#></yellow> <gray>- Delete an accidental record</gray>"));
         if (sender.hasPermission("towerspeed.admin")) {
+            sender.sendMessage(MM.deserialize("<yellow>/timer hardcore <on|off|toggle></yellow> <gray>- Set Hardcore mode for speedrun worlds</gray>"));
+            sender.sendMessage(MM.deserialize("<yellow>/timer difficulty <easy|normal|hard></yellow> <gray>- Set difficulty for speedrun worlds</gray>"));
+            sender.sendMessage(MM.deserialize("<yellow>/timer worldreset</yellow> <gray>- Reset the speedrun world and return to lobby</gray>"));
             sender.sendMessage(MM.deserialize("<yellow>/timer reload</yellow> <gray>- Reload configuration and records</gray>"));
         }
     }
@@ -282,11 +362,20 @@ public class TimerCommand implements BasicCommand {
     @Override
     public @NotNull Collection<String> suggest(@NotNull CommandSourceStack source, @NotNull String[] args) {
         if (args.length <= 1) {
-            List<String> subs = new ArrayList<>(List.of("start", "split", "unsplit", "pause", "resume", "reset", "toggle", "category", "records", "leaderboard"));
+            List<String> subs = new ArrayList<>(List.of("start", "split", "unsplit", "pause", "resume", "reset", "lobby", "join", "rejoin", "return", "back", "toggle", "category", "records", "leaderboard"));
             if (source.getSender().hasPermission("towerspeed.admin")) {
+                subs.add("hardcore");
+                subs.add("difficulty");
+                subs.add("worldreset");
                 subs.add("reload");
             }
             return filter(subs, args.length == 0 ? "" : args[0]);
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("hardcore") || args[0].equalsIgnoreCase("hc"))) {
+            return filter(List.of("on", "off", "toggle"), args[1]);
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("difficulty") || args[0].equalsIgnoreCase("diff"))) {
+            return filter(List.of("easy", "normal", "hard"), args[1]);
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("start")) {
             return filter(List.of("instant"), args[1]);

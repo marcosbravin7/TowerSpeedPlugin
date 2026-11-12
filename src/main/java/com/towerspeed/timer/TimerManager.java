@@ -86,6 +86,10 @@ public class TimerManager {
             return;
         }
 
+        if (plugin.getWorldResetManager() != null && !plugin.getWorldResetManager().prepareWorldAndPlayersForStart(initiator)) {
+            return;
+        }
+
         int countdownSec = instant ? 0 : plugin.getConfig().getInt("countdown-seconds", 3);
         if (countdownSec <= 0) {
             beginRunning(initiator.getName());
@@ -121,6 +125,9 @@ public class TimerManager {
     }
 
     private void beginRunning(String starter) {
+        if (plugin.getWorldResetManager() != null) {
+            plugin.getWorldResetManager().markRunBegan();
+        }
         state = TimerState.RUNNING;
         startTime = System.currentTimeMillis();
         elapsedBeforePause = 0;
