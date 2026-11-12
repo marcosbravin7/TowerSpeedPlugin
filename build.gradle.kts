@@ -27,12 +27,14 @@ tasks {
     }
 
     processResources {
+        val props = mapOf(
+            "version" to project.version,
+            "name" to project.name
+        )
+        inputs.properties(props)
         filteringCharset = "UTF-8"
         filesMatching("paper-plugin.yml") {
-            expand(
-                "version" to project.version,
-                "name" to project.name
-            )
+            expand(props)
         }
     }
 }
