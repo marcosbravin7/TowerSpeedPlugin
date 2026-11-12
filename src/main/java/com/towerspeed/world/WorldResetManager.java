@@ -47,15 +47,20 @@ import java.util.stream.Stream;
  */
 public class WorldResetManager implements Listener {
 
-    public static final String SPEEDRUN_OVERWORLD = "speedrun";
-    public static final String SPEEDRUN_NETHER = "speedrun_nether";
-    public static final String SPEEDRUN_THE_END = "speedrun_the_end";
+    public static final String SPEEDRUN_PREFIX = "speedrun";
 
     private static final MiniMessage MM = MiniMessage.miniMessage();
     private static final int INNER_TICKET_RADIUS_SQ = 25; // Keep 5-chunk radius around spawn in RAM until run starts
 
     private final TowerSpeedPlugin plugin;
     private final NamespacedKey activeWorldUidKey;
+
+    // Each reset increments worldIndex and uses a fresh directory (e.g. speedrun_1, speedrun_2)
+    // so Windows file locks on old region/level.dat files can never cause Bukkit to reuse the old seed.
+    private int worldIndex = 0;
+    private String activeOverworldName = "speedrun_1";
+    private String activeNetherName = "speedrun_1_nether";
+    private String activeEndName = "speedrun_1_the_end";
 
     private boolean resetInProgress = false;
     private boolean worldFreshlyPrepared = false;
@@ -80,25 +85,31 @@ public class WorldResetManager implements Listener {
      * from a previous session and begin background pre-generation of the initial speedrun world.
      */
     public void initializeOnStartup() {
-        if (Bukkit.getWorld(SPEEDRUN_OVERWORLD) == null) {
-            File container = Bukkit.getWorldContainer();
-            for (String name : List.of(SPEEDRUN_OVERWORLD, SPEEDRUN_NETHER, SPEEDRUN_THE_END)) {
-                File dir = new File(container, name);
-                if (dir.exists()) {
-                    deleteDirectoryWithRetry(dir.toPath(), 3);
+        cleanupStaleWorldDirectories();
+
+        // Prepare and pre-generate the initial speedrun world in the background once the server finishes booting
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!plugin.isEnabled() || resetInProgress || getActiveOverworld() != null) {
+                return;
+            }
+            World initialWorld = createNextSpeedrunOverworld();
+            if (initialWorld != null) {
+                startSpawnPreGeneration(initialWorld, false);
+            }
+        }, 1L);
+    }
+
+    private void cleanupStaleWorldDirectories() {
+        File container = Bukkit.getWorldContainer();
+        File[] files = container.listFiles();
+        if (files == null) return;
+
+        for (File dir : files) {
+            if (dir.isDirectory() && dir.getName().startsWith(SPEEDRUN_PREFIX)) {
+                if (Bukkit.getWorld(dir.getName()) == null) {
+                    deleteDirectoryWithRetry(dir.toPath(), 3, 100L);
                 }
             }
-
-            // Prepare and pre-generate the initial speedrun world in the background once the server finishes booting
-            Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                if (!plugin.isEnabled() || resetInProgress || Bukkit.getWorld(SPEEDRUN_OVERWORLD) != null) {
-                    return;
-                }
-                World initialWorld = createSpeedrunOverworld();
-                if (initialWorld != null) {
-                    startSpawnPreGeneration(initialWorld, false);
-                }
-            }, 1L);
         }
     }
 
@@ -119,12 +130,17 @@ public class WorldResetManager implements Listener {
         return Math.round(getPreGenProgress() * 100.0f);
     }
 
+    public @Nullable World getActiveOverworld() {
+        return Bukkit.getWorld(activeOverworldName);
+    }
+
     public boolean isSpeedrunWorld(@Nullable World world) {
         if (world == null) return false;
         String name = world.getName();
-        return name.equals(SPEEDRUN_OVERWORLD)
-                || name.equals(SPEEDRUN_NETHER)
-                || name.equals(SPEEDRUN_THE_END);
+        return name.equals(activeOverworldName)
+                || name.equals(activeNetherName)
+                || name.equals(activeEndName)
+                || name.startsWith(SPEEDRUN_PREFIX);
     }
 
     public World getLobbyWorld() {
@@ -139,9 +155,9 @@ public class WorldResetManager implements Listener {
      * Executes /timer worldreset:
      * 1. Cancels any active pre-generation and locks state to prevent concurrent resets or starts.
      * 2. Resets the timer and evacuates all players to the lobby in SURVIVAL mode.
-     * 3. Unloads speedrun dimensions after chunk tickets release.
-     * 4. Deletes world folders asynchronously, creates a fresh Overworld on the main thread,
-     *    and starts throttled spiral spawn chunk pre-generation.
+     * 3. Unloads the previous speedrun dimensions after chunk tickets release.
+     * 4. Immediately generates a brand-new speedrun_<N> Overworld with a guaranteed fresh random seed,
+     *    while deleting the old world directories asynchronously in the background.
      */
     public void triggerWorldReset(CommandSender initiator, TimerManager timerManager) {
         if (resetInProgress) {
@@ -173,8 +189,10 @@ public class WorldResetManager implements Listener {
             player.showTitle(resettingTitle);
         }
 
+        List<String> oldWorldNames = List.of(activeEndName, activeNetherName, activeOverworldName);
+
         // Disable auto-save and spawn chunk retention on existing speedrun worlds
-        for (String worldName : List.of(SPEEDRUN_THE_END, SPEEDRUN_NETHER, SPEEDRUN_OVERWORLD)) {
+        for (String worldName : oldWorldNames) {
             World world = Bukkit.getWorld(worldName);
             if (world != null) {
                 cancelEnderPearlsInWorld(world);
@@ -185,10 +203,10 @@ public class WorldResetManager implements Listener {
         }
 
         // Wait 2 ticks so Paper processes player teleports and releases player chunk tickets before unloading
-        Bukkit.getScheduler().runTaskLater(plugin, () -> unloadAndRegenerateWorlds(0), 2L);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> unloadOldAndCreateNewWorld(oldWorldNames, 0), 2L);
     }
 
-    private void unloadAndRegenerateWorlds(int attempt) {
+    private void unloadOldAndCreateNewWorld(List<String> oldWorldNames, int attempt) {
         // Ensure no player snuck into or remained in the speedrun worlds (including dead players on the respawn screen)
         for (Player player : Bukkit.getOnlinePlayers()) {
             if (player.isDead() || isSpeedrunWorld(player.getWorld())) {
@@ -197,7 +215,7 @@ public class WorldResetManager implements Listener {
         }
 
         boolean allUnloaded = true;
-        for (String worldName : List.of(SPEEDRUN_THE_END, SPEEDRUN_NETHER, SPEEDRUN_OVERWORLD)) {
+        for (String worldName : oldWorldNames) {
             World world = Bukkit.getWorld(worldName);
             if (world != null) {
                 boolean unloaded = Bukkit.unloadWorld(world, false);
@@ -209,44 +227,40 @@ public class WorldResetManager implements Listener {
         }
 
         if (!allUnloaded && attempt < 3) {
-            Bukkit.getScheduler().runTaskLater(plugin, () -> unloadAndRegenerateWorlds(attempt + 1), 5L);
+            Bukkit.getScheduler().runTaskLater(plugin, () -> unloadOldAndCreateNewWorld(oldWorldNames, attempt + 1), 5L);
             return;
         }
 
+        // Schedule asynchronous deletion of the old world directories after 40 ticks (2 seconds)
+        // so Paper's Moonrise RegionFile I/O threads have completely closed all .mca handles on Windows.
         File worldContainer = Bukkit.getWorldContainer();
-        List<Path> dirsToDelete = List.of(
-                new File(worldContainer, SPEEDRUN_OVERWORLD).toPath(),
-                new File(worldContainer, SPEEDRUN_NETHER).toPath(),
-                new File(worldContainer, SPEEDRUN_THE_END).toPath()
-        );
+        List<Path> dirsToDelete = oldWorldNames.stream()
+                .map(name -> new File(worldContainer, name).toPath())
+                .toList();
 
-        // Delete world directories asynchronously to avoid blocking the main thread on disk I/O
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+        Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
             for (Path dir : dirsToDelete) {
                 if (Files.exists(dir)) {
-                    deleteDirectoryWithRetry(dir, 6);
+                    deleteDirectoryWithRetry(dir, 8, 300L);
                 }
             }
+        }, 40L);
 
-            // Return to the main server thread to create the new Overworld and kick off throttled chunk pre-gen
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                if (!plugin.isEnabled()) return;
-                try {
-                    World newOverworld = createSpeedrunOverworld();
-                    if (newOverworld != null) {
-                        resetInProgress = false;
-                        startSpawnPreGeneration(newOverworld, true);
-                    } else {
-                        resetInProgress = false;
-                        Bukkit.broadcast(MM.deserialize("<red>[Timer] Failed to generate the new speedrun world. Check server logs.</red>"));
-                    }
-                } catch (Exception e) {
-                    resetInProgress = false;
-                    plugin.getLogger().severe("Error generating new speedrun world: " + e.getMessage());
-                    Bukkit.broadcast(MM.deserialize("<red>[Timer] Error generating new speedrun world: " + e.getMessage() + "</red>"));
-                }
-            });
-        });
+        // Immediately create the new Overworld in a fresh directory (speedrun_<next>) on the main thread
+        try {
+            World newOverworld = createNextSpeedrunOverworld();
+            if (newOverworld != null) {
+                resetInProgress = false;
+                startSpawnPreGeneration(newOverworld, true);
+            } else {
+                resetInProgress = false;
+                Bukkit.broadcast(MM.deserialize("<red>[Timer] Failed to generate the new speedrun world. Check server logs.</red>"));
+            }
+        } catch (Exception e) {
+            resetInProgress = false;
+            plugin.getLogger().severe("Error generating new speedrun world: " + e.getMessage());
+            Bukkit.broadcast(MM.deserialize("<red>[Timer] Error generating new speedrun world: " + e.getMessage() + "</red>"));
+        }
     }
 
     /**
@@ -282,7 +296,7 @@ public class WorldResetManager implements Listener {
         this.pregenInFlight = 0;
 
         this.pregenTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            if (sessionId != this.pregenSessionId || !overworld.equals(Bukkit.getWorld(SPEEDRUN_OVERWORLD))) {
+            if (sessionId != this.pregenSessionId || !overworld.equals(getActiveOverworld())) {
                 cancelPreGeneration();
                 return;
             }
@@ -302,7 +316,7 @@ public class WorldResetManager implements Listener {
                         pregenCompletedChunks++;
 
                         // Keep the immediate 5-chunk radius around spawn loaded in memory until the run starts
-                        if (chunk != null && offset.distSq() <= INNER_TICKET_RADIUS_SQ && overworld.equals(Bukkit.getWorld(SPEEDRUN_OVERWORLD))) {
+                        if (chunk != null && offset.distSq() <= INNER_TICKET_RADIUS_SQ && overworld.equals(getActiveOverworld())) {
                             overworld.addPluginChunkTicket(cx, cz, plugin);
                         }
 
@@ -372,10 +386,10 @@ public class WorldResetManager implements Listener {
             return false;
         }
 
-        World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+        World overworld = getActiveOverworld();
         if (overworld == null) {
             initiator.sendMessage(MM.deserialize("<yellow>[Timer] Speedrun world was not loaded yet; generating now, please wait...</yellow>"));
-            overworld = createSpeedrunOverworld();
+            overworld = createNextSpeedrunOverworld();
             if (overworld == null) {
                 initiator.sendMessage(MM.deserialize("<red>[Timer] Could not create speedrun world!</red>"));
                 return false;
@@ -414,7 +428,7 @@ public class WorldResetManager implements Listener {
      */
     public void markRunBegan() {
         this.worldFreshlyPrepared = false;
-        World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+        World overworld = getActiveOverworld();
         if (overworld != null) {
             overworld.removePluginChunkTickets(plugin);
         }
@@ -445,12 +459,26 @@ public class WorldResetManager implements Listener {
         player.sendMessage(MM.deserialize("<green>[Timer] Returned to the lobby.</green>"));
     }
 
-    private @Nullable World createSpeedrunOverworld() {
+    /**
+     * Advances to a fresh world directory name (speedrun_1, speedrun_2, ...) and creates a new Overworld
+     * with a guaranteed new random seed.
+     */
+    private @Nullable World createNextSpeedrunOverworld() {
+        File container = Bukkit.getWorldContainer();
+        do {
+            worldIndex++;
+            activeOverworldName = SPEEDRUN_PREFIX + "_" + worldIndex;
+            activeNetherName = activeOverworldName + "_nether";
+            activeEndName = activeOverworldName + "_the_end";
+        } while (new File(container, activeOverworldName).exists() || Bukkit.getWorld(activeOverworldName) != null);
+
         long seed = ThreadLocalRandom.current().nextLong();
         World lobby = getLobbyWorld();
         boolean hardcore = lobby.isHardcore();
 
-        WorldCreator creator = new WorldCreator(SPEEDRUN_OVERWORLD)
+        plugin.getLogger().info("Creating new speedrun Overworld '" + activeOverworldName + "' with seed: " + seed);
+
+        WorldCreator creator = new WorldCreator(activeOverworldName)
                 .environment(World.Environment.NORMAL)
                 .seed(seed)
                 .hardcore(hardcore)
@@ -467,11 +495,11 @@ public class WorldResetManager implements Listener {
     }
 
     public @Nullable World getOrCreateNether() {
-        World nether = Bukkit.getWorld(SPEEDRUN_NETHER);
+        World nether = Bukkit.getWorld(activeNetherName);
         if (nether != null) {
             return nether;
         }
-        World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+        World overworld = getActiveOverworld();
         if (overworld == null) {
             return null;
         }
@@ -481,7 +509,7 @@ public class WorldResetManager implements Listener {
         }
 
         boolean hardcore = overworld.isHardcore();
-        WorldCreator creator = new WorldCreator(SPEEDRUN_NETHER)
+        WorldCreator creator = new WorldCreator(activeNetherName)
                 .environment(World.Environment.NETHER)
                 .seed(overworld.getSeed())
                 .hardcore(hardcore)
@@ -495,11 +523,11 @@ public class WorldResetManager implements Listener {
     }
 
     public @Nullable World getOrCreateTheEnd() {
-        World theEnd = Bukkit.getWorld(SPEEDRUN_THE_END);
+        World theEnd = Bukkit.getWorld(activeEndName);
         if (theEnd != null) {
             return theEnd;
         }
-        World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+        World overworld = getActiveOverworld();
         if (overworld == null) {
             return null;
         }
@@ -509,7 +537,7 @@ public class WorldResetManager implements Listener {
         }
 
         boolean hardcore = overworld.isHardcore();
-        WorldCreator creator = new WorldCreator(SPEEDRUN_THE_END)
+        WorldCreator creator = new WorldCreator(activeEndName)
                 .environment(World.Environment.THE_END)
                 .seed(overworld.getSeed())
                 .hardcore(hardcore)
@@ -640,7 +668,7 @@ public class WorldResetManager implements Listener {
         }
     }
 
-    private void deleteDirectoryWithRetry(Path rootPath, int maxAttempts) {
+    private void deleteDirectoryWithRetry(Path rootPath, int maxAttempts, long delayMs) {
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 if (!Files.exists(rootPath)) {
@@ -661,14 +689,14 @@ public class WorldResetManager implements Listener {
             }
 
             try {
-                Thread.sleep(100L);
+                Thread.sleep(delayMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
             }
         }
         if (Files.exists(rootPath)) {
-            plugin.getLogger().warning("Some files in " + rootPath + " could not be deleted after " + maxAttempts + " attempts.");
+            plugin.getLogger().warning("Some files in " + rootPath + " could not be deleted after " + maxAttempts + " attempts (will be cleaned up on next startup).");
         }
     }
 
@@ -688,7 +716,7 @@ public class WorldResetManager implements Listener {
             return;
         }
 
-        World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+        World overworld = getActiveOverworld();
         if (overworld == null) {
             evacuatePlayerToLobby(player);
             return;
@@ -736,7 +764,7 @@ public class WorldResetManager implements Listener {
             return;
         }
 
-        World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+        World overworld = getActiveOverworld();
         if (overworld == null) {
             return;
         }
@@ -787,7 +815,7 @@ public class WorldResetManager implements Listener {
         PlayerTeleportEvent.TeleportCause cause = event.getCause();
 
         if (cause == PlayerTeleportEvent.TeleportCause.NETHER_PORTAL) {
-            if (fromWorld.getName().equals(SPEEDRUN_OVERWORLD)) {
+            if (fromWorld.getName().equals(activeOverworldName)) {
                 World nether = getOrCreateNether();
                 if (nether == null) {
                     event.setCancelled(true);
@@ -800,8 +828,8 @@ public class WorldResetManager implements Listener {
                 event.setCanCreatePortal(true);
                 event.setSearchRadius(16);
                 event.setCreationRadius(16);
-            } else if (fromWorld.getName().equals(SPEEDRUN_NETHER)) {
-                World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+            } else if (fromWorld.getName().equals(activeNetherName)) {
+                World overworld = getActiveOverworld();
                 if (overworld == null) {
                     event.setCancelled(true);
                     return;
@@ -815,7 +843,7 @@ public class WorldResetManager implements Listener {
                 event.setCreationRadius(16);
             }
         } else if (cause == PlayerTeleportEvent.TeleportCause.END_PORTAL) {
-            if (fromWorld.getName().equals(SPEEDRUN_OVERWORLD)) {
+            if (fromWorld.getName().equals(activeOverworldName)) {
                 World theEnd = getOrCreateTheEnd();
                 if (theEnd == null) {
                     event.setCancelled(true);
@@ -824,9 +852,9 @@ public class WorldResetManager implements Listener {
                 buildEndObsidianPlatform(theEnd);
                 event.setTo(new Location(theEnd, 100.5, 49.0, 0.5, 90.0f, 0.0f));
                 event.setCanCreatePortal(false);
-            } else if (fromWorld.getName().equals(SPEEDRUN_THE_END)) {
+            } else if (fromWorld.getName().equals(activeEndName)) {
                 // Returning from The End exit portal to the speedrun Overworld
-                World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+                World overworld = getActiveOverworld();
                 if (overworld == null) {
                     event.setCancelled(true);
                     return;
@@ -857,7 +885,7 @@ public class WorldResetManager implements Listener {
         PortalType portalType = event.getPortalType();
 
         if (portalType == PortalType.NETHER) {
-            if (fromWorld.getName().equals(SPEEDRUN_OVERWORLD)) {
+            if (fromWorld.getName().equals(activeOverworldName)) {
                 World nether = getOrCreateNether();
                 if (nether == null) {
                     event.setCancelled(true);
@@ -870,8 +898,8 @@ public class WorldResetManager implements Listener {
                 event.setCanCreatePortal(true);
                 event.setSearchRadius(16);
                 event.setCreationRadius(16);
-            } else if (fromWorld.getName().equals(SPEEDRUN_NETHER)) {
-                World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+            } else if (fromWorld.getName().equals(activeNetherName)) {
+                World overworld = getActiveOverworld();
                 if (overworld == null) {
                     event.setCancelled(true);
                     return;
@@ -885,7 +913,7 @@ public class WorldResetManager implements Listener {
                 event.setCreationRadius(16);
             }
         } else if (portalType == PortalType.ENDER) {
-            if (fromWorld.getName().equals(SPEEDRUN_OVERWORLD)) {
+            if (fromWorld.getName().equals(activeOverworldName)) {
                 World theEnd = getOrCreateTheEnd();
                 if (theEnd == null) {
                     event.setCancelled(true);
@@ -894,8 +922,8 @@ public class WorldResetManager implements Listener {
                 buildEndObsidianPlatform(theEnd);
                 event.setTo(new Location(theEnd, 100.5, 49.0, 0.5, 90.0f, 0.0f));
                 event.setCanCreatePortal(false);
-            } else if (fromWorld.getName().equals(SPEEDRUN_THE_END)) {
-                World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+            } else if (fromWorld.getName().equals(activeEndName)) {
+                World overworld = getActiveOverworld();
                 if (overworld == null) {
                     event.setCancelled(true);
                     return;
