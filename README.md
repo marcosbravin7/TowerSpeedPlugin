@@ -41,6 +41,7 @@ Designed specifically for **co-op runs** (such as tower climbing, parkour challe
 | `/timer pause` | | Pauses the running timer | `towerspeed.timer` (default: all) |
 | `/timer resume` | | Resumes the paused timer | `towerspeed.timer` (default: all) |
 | `/timer reset` | | Resets the timer back to 00:00.0 | `towerspeed.timer` (default: all) |
+| `/timer lobby` | | Teleports you back to the lobby world and restores Survival mode | `towerspeed.timer` (default: all) |
 | `/timer toggle` | | Toggles the sidebar scoreboard on/off for yourself | None (all players) |
 | `/timer category <name>` | `/timer cat` | Switches active category (e.g. `tower_climb`, `any_percent`) | `towerspeed.timer` (default: all) |
 | `/timer records [cat]` | `/timer pb`, `/timer leaderboard` | Displays the Top 5 leaderboard with times and dates | None (all players) |
@@ -71,6 +72,12 @@ play-sounds: true
 
 # Spawn celebration fireworks for all players upon setting a new server record
 celebration-fireworks: true
+
+# Radius in chunks around the speedrun spawn to pre-generate while waiting in the lobby (8 = 17x17 = 289 chunks)
+pregen-chunk-radius: 8
+
+# Maximum number of chunks generating asynchronously at the same time (lower = less CPU/lag in lobby)
+pregen-max-concurrent: 2
 
 # Pre-configured categories & their sequential splits
 categories:

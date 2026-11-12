@@ -33,8 +33,8 @@ public class TowerSpeedPlugin extends JavaPlugin implements Listener {
 
         // Initialize components
         this.recordStorage = new RecordStorage(getDataFolder(), getLogger());
-        this.scoreboard = new LiveSplitScoreboard();
         this.worldResetManager = new WorldResetManager(this);
+        this.scoreboard = new LiveSplitScoreboard(this.worldResetManager);
         this.worldResetManager.initializeOnStartup();
         this.timerManager = new TimerManager(this, recordStorage, scoreboard);
 
@@ -71,6 +71,9 @@ public class TowerSpeedPlugin extends JavaPlugin implements Listener {
         }
         if (recordStorage != null) {
             recordStorage.save();
+        }
+        if (scoreboard != null) {
+            scoreboard.cleanup();
         }
         for (Player player : Bukkit.getOnlinePlayers()) {
             player.setScoreboard(Bukkit.getScoreboardManager().getMainScoreboard());

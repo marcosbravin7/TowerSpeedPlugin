@@ -3,7 +3,6 @@ package com.towerspeed.world;
 import com.towerspeed.TowerSpeedPlugin;
 import com.towerspeed.timer.TimerManager;
 import com.towerspeed.timer.TimerState;
-import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.title.Title;
 import net.kyori.adventure.util.TriState;
@@ -15,12 +14,12 @@ import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.block.Block;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.EnderPearl;
-import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityPortalEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerPortalEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -28,6 +27,7 @@ import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.potion.PotionEffect;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 import org.jetbrains.annotations.Nullable;
 
@@ -42,7 +42,8 @@ import java.util.stream.Stream;
 
 /**
  * Manages the speedrun multi-world lifecycle (Overworld, on-demand Nether & The End),
- * safe world unloading/deletion, player state resets, portal linking, and join/leave synchronization.
+ * throttled background spawn chunk pre-generation, safe world unloading/deletion,
+ * player state resets, Hardcore death/spectator handling, portal linking, and join/leave synchronization.
  */
 public class WorldResetManager implements Listener {
 
@@ -51,12 +52,23 @@ public class WorldResetManager implements Listener {
     public static final String SPEEDRUN_THE_END = "speedrun_the_end";
 
     private static final MiniMessage MM = MiniMessage.miniMessage();
+    private static final int INNER_TICKET_RADIUS_SQ = 25; // Keep 5-chunk radius around spawn in RAM until run starts
 
     private final TowerSpeedPlugin plugin;
     private final NamespacedKey activeWorldUidKey;
 
     private boolean resetInProgress = false;
     private boolean worldFreshlyPrepared = false;
+
+    // Throttled chunk pre-generation state
+    private boolean pregenInProgress = false;
+    private int pregenTotalChunks = 0;
+    private int pregenCompletedChunks = 0;
+    private int pregenInFlight = 0;
+    private long pregenSessionId = 0;
+    private @Nullable BukkitTask pregenTask = null;
+
+    private record ChunkOffset(int dx, int dz, int distSq) {}
 
     public WorldResetManager(TowerSpeedPlugin plugin) {
         this.plugin = plugin;
@@ -65,7 +77,7 @@ public class WorldResetManager implements Listener {
 
     /**
      * Called on plugin startup to clean up any leftover unloaded speedrun world folders
-     * from a previous session so the first run starts clean.
+     * from a previous session and begin background pre-generation of the initial speedrun world.
      */
     public void initializeOnStartup() {
         if (Bukkit.getWorld(SPEEDRUN_OVERWORLD) == null) {
@@ -76,11 +88,35 @@ public class WorldResetManager implements Listener {
                     deleteDirectoryWithRetry(dir.toPath(), 3);
                 }
             }
+
+            // Prepare and pre-generate the initial speedrun world in the background once the server finishes booting
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (!plugin.isEnabled() || resetInProgress || Bukkit.getWorld(SPEEDRUN_OVERWORLD) != null) {
+                    return;
+                }
+                World initialWorld = createSpeedrunOverworld();
+                if (initialWorld != null) {
+                    startSpawnPreGeneration(initialWorld, false);
+                }
+            }, 1L);
         }
     }
 
     public boolean isResetInProgress() {
         return resetInProgress;
+    }
+
+    public boolean isPreGenInProgress() {
+        return pregenInProgress;
+    }
+
+    public float getPreGenProgress() {
+        if (pregenTotalChunks <= 0) return 0.0f;
+        return Math.clamp((float) pregenCompletedChunks / (float) pregenTotalChunks, 0.0f, 1.0f);
+    }
+
+    public int getPreGenPercent() {
+        return Math.round(getPreGenProgress() * 100.0f);
     }
 
     public boolean isSpeedrunWorld(@Nullable World world) {
@@ -101,10 +137,11 @@ public class WorldResetManager implements Listener {
 
     /**
      * Executes /timer worldreset:
-     * 1. Locks state to prevent concurrent resets or starts.
-     * 2. Resets the timer and evacuates all players to the lobby.
+     * 1. Cancels any active pre-generation and locks state to prevent concurrent resets or starts.
+     * 2. Resets the timer and evacuates all players to the lobby in SURVIVAL mode.
      * 3. Unloads speedrun dimensions after chunk tickets release.
-     * 4. Deletes world folders asynchronously and creates a fresh Overworld on the main thread.
+     * 4. Deletes world folders asynchronously, creates a fresh Overworld on the main thread,
+     *    and starts throttled spiral spawn chunk pre-generation.
      */
     public void triggerWorldReset(CommandSender initiator, TimerManager timerManager) {
         if (resetInProgress) {
@@ -112,6 +149,7 @@ public class WorldResetManager implements Listener {
             return;
         }
 
+        cancelPreGeneration();
         resetInProgress = true;
         worldFreshlyPrepared = false;
 
@@ -125,8 +163,8 @@ public class WorldResetManager implements Listener {
 
         Title resettingTitle = Title.title(
                 MM.deserialize("<gold><bold>RESETTING WORLD...</bold></gold>"),
-                MM.deserialize("<gray>Please wait in the lobby</gray>"),
-                Title.Times.times(Duration.ofMillis(100), Duration.ofMillis(3000), Duration.ofMillis(300))
+                MM.deserialize("<gray>Preparing new seed in the background</gray>"),
+                Title.Times.times(Duration.ofMillis(100), Duration.ofMillis(2500), Duration.ofMillis(300))
         );
 
         // Evacuate all online players to the lobby immediately
@@ -190,28 +228,14 @@ public class WorldResetManager implements Listener {
                 }
             }
 
-            // Return to the main server thread to generate the new Overworld
+            // Return to the main server thread to create the new Overworld and kick off throttled chunk pre-gen
             Bukkit.getScheduler().runTask(plugin, () -> {
                 if (!plugin.isEnabled()) return;
                 try {
                     World newOverworld = createSpeedrunOverworld();
                     if (newOverworld != null) {
-                        worldFreshlyPrepared = true;
                         resetInProgress = false;
-
-                        Title readyTitle = Title.title(
-                                MM.deserialize("<green><bold>WORLD READY!</bold></green>"),
-                                MM.deserialize("<yellow>Use /timer start to begin</yellow>"),
-                                Title.Times.times(Duration.ofMillis(100), Duration.ofMillis(2500), Duration.ofMillis(400))
-                        );
-
-                        Bukkit.broadcast(MM.deserialize("<green><bold>[Timer]</bold> New speedrun world generated! Run <yellow>/timer start</yellow> when everyone is ready.</green>"));
-                        for (Player p : Bukkit.getOnlinePlayers()) {
-                            p.showTitle(readyTitle);
-                            if (plugin.getConfig().getBoolean("play-sounds", true)) {
-                                p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1f, 1.5f);
-                            }
-                        }
+                        startSpawnPreGeneration(newOverworld, true);
                     } else {
                         resetInProgress = false;
                         Bukkit.broadcast(MM.deserialize("<red>[Timer] Failed to generate the new speedrun world. Check server logs.</red>"));
@@ -226,9 +250,115 @@ public class WorldResetManager implements Listener {
     }
 
     /**
+     * Pre-generates spawn chunks in a spiral outward from the Overworld spawn location,
+     * keeping at most `pregen-max-concurrent` async chunk requests in flight at any time
+     * so players in the lobby experience zero TPS drop.
+     */
+    private void startSpawnPreGeneration(World overworld, boolean announceWhenDone) {
+        cancelPreGeneration();
+
+        int radius = Math.clamp(plugin.getConfig().getInt("pregen-chunk-radius", 8), 1, 16);
+        int maxConcurrent = Math.clamp(plugin.getConfig().getInt("pregen-max-concurrent", 2), 1, 8);
+
+        Location spawnLoc = overworld.getSpawnLocation();
+        int centerChunkX = spawnLoc.getBlockX() >> 4;
+        int centerChunkZ = spawnLoc.getBlockZ() >> 4;
+
+        List<ChunkOffset> offsets = new ArrayList<>((2 * radius + 1) * (2 * radius + 1));
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                offsets.add(new ChunkOffset(dx, dz, dx * dx + dz * dz));
+            }
+        }
+        // Sort radially outward from (0, 0) so the closest chunks around spawn generate first
+        offsets.sort(Comparator.comparingInt(ChunkOffset::distSq));
+
+        Deque<ChunkOffset> queue = new ArrayDeque<>(offsets);
+        long sessionId = ++this.pregenSessionId;
+
+        this.pregenInProgress = true;
+        this.pregenTotalChunks = offsets.size();
+        this.pregenCompletedChunks = 0;
+        this.pregenInFlight = 0;
+
+        this.pregenTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (sessionId != this.pregenSessionId || !overworld.equals(Bukkit.getWorld(SPEEDRUN_OVERWORLD))) {
+                cancelPreGeneration();
+                return;
+            }
+
+            while (pregenInFlight < maxConcurrent && !queue.isEmpty()) {
+                ChunkOffset offset = queue.poll();
+                int cx = centerChunkX + offset.dx();
+                int cz = centerChunkZ + offset.dz();
+                pregenInFlight++;
+
+                overworld.getChunkAtAsync(cx, cz, true).whenComplete((chunk, throwable) -> {
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (sessionId != this.pregenSessionId) {
+                            return;
+                        }
+                        pregenInFlight = Math.max(0, pregenInFlight - 1);
+                        pregenCompletedChunks++;
+
+                        // Keep the immediate 5-chunk radius around spawn loaded in memory until the run starts
+                        if (chunk != null && offset.distSq() <= INNER_TICKET_RADIUS_SQ && overworld.equals(Bukkit.getWorld(SPEEDRUN_OVERWORLD))) {
+                            overworld.addPluginChunkTicket(cx, cz, plugin);
+                        }
+
+                        if (pregenCompletedChunks >= pregenTotalChunks && queue.isEmpty()) {
+                            finishSpawnPreGeneration(announceWhenDone);
+                        }
+                    });
+                });
+            }
+        }, 1L, 1L);
+    }
+
+    private void finishSpawnPreGeneration(boolean announce) {
+        if (pregenTask != null && !pregenTask.isCancelled()) {
+            pregenTask.cancel();
+            pregenTask = null;
+        }
+        pregenInProgress = false;
+        worldFreshlyPrepared = true;
+
+        if (announce) {
+            Title readyTitle = Title.title(
+                    MM.deserialize("<green><bold>WORLD READY!</bold></green>"),
+                    MM.deserialize("<yellow>Use /timer start to begin</yellow>"),
+                    Title.Times.times(Duration.ofMillis(100), Duration.ofMillis(2500), Duration.ofMillis(400))
+            );
+
+            Bukkit.broadcast(MM.deserialize("<green><bold>[Timer]</bold> New speedrun world is 100% pre-generated! Run <yellow>/timer start</yellow> when everyone is ready.</green>"));
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                p.showTitle(readyTitle);
+                if (plugin.getConfig().getBoolean("play-sounds", true)) {
+                    p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1f, 1.5f);
+                }
+            }
+        } else {
+            plugin.getLogger().info("Initial speedrun world spawn chunks pre-generated and ready.");
+        }
+    }
+
+    private void cancelPreGeneration() {
+        pregenSessionId++;
+        if (pregenTask != null && !pregenTask.isCancelled()) {
+            pregenTask.cancel();
+            pregenTask = null;
+        }
+        pregenInProgress = false;
+        pregenInFlight = 0;
+        pregenCompletedChunks = 0;
+        pregenTotalChunks = 0;
+    }
+
+    /**
      * Called by TimerManager right when /timer start is executed.
-     * Ensures the speedrun Overworld exists, teleports players from the lobby into the speedrun spawn,
-     * and performs a full vanilla speedrun reset on players starting the new world.
+     * Blocks if the world is resetting or still pre-generating spawn chunks.
+     * Otherwise teleports players from the lobby into the pre-generated speedrun spawn
+     * and performs a full vanilla speedrun reset.
      */
     public boolean prepareWorldAndPlayersForStart(CommandSender initiator) {
         if (resetInProgress) {
@@ -236,15 +366,22 @@ public class WorldResetManager implements Listener {
             return false;
         }
 
+        if (pregenInProgress) {
+            initiator.sendMessage(MM.deserialize("<red>[Timer] World is still pre-generating spawn chunks (<yellow>"
+                    + getPreGenPercent() + "%</yellow>)! Please wait until it reaches 100%.</red>"));
+            return false;
+        }
+
         World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
         if (overworld == null) {
-            Bukkit.broadcast(MM.deserialize("<yellow>[Timer] Generating speedrun world for first run, please wait...</yellow>"));
+            initiator.sendMessage(MM.deserialize("<yellow>[Timer] Speedrun world was not loaded yet; generating now, please wait...</yellow>"));
             overworld = createSpeedrunOverworld();
             if (overworld == null) {
                 initiator.sendMessage(MM.deserialize("<red>[Timer] Could not create speedrun world!</red>"));
                 return false;
             }
-            worldFreshlyPrepared = true;
+            startSpawnPreGeneration(overworld, true);
+            return false;
         }
 
         Location spawnLoc = overworld.getSpawnLocation();
@@ -273,11 +410,14 @@ public class WorldResetManager implements Listener {
 
     /**
      * Marks that the countdown completed and the run officially began.
-     * Keeping worldFreshlyPrepared true until GO! ensures that if a countdown is cancelled
-     * via /timer reset before GO!, the next /timer start still re-teleports and resets everyone at spawn.
+     * Releases the temporary pre-gen chunk tickets so standard player chunk loading takes over.
      */
     public void markRunBegan() {
         this.worldFreshlyPrepared = false;
+        World overworld = Bukkit.getWorld(SPEEDRUN_OVERWORLD);
+        if (overworld != null) {
+            overworld.removePluginChunkTickets(plugin);
+        }
     }
 
     /**
@@ -285,6 +425,7 @@ public class WorldResetManager implements Listener {
      * are saved at the lobby spawn.
      */
     public void shutdownCleanup() {
+        cancelPreGeneration();
         for (Player player : Bukkit.getOnlinePlayers()) {
             if (isSpeedrunWorld(player.getWorld())) {
                 evacuatePlayerToLobby(player);
@@ -292,17 +433,35 @@ public class WorldResetManager implements Listener {
         }
     }
 
+    /**
+     * Handles /timer lobby for a player to return to the lobby in SURVIVAL mode.
+     */
+    public void sendPlayerToLobby(Player player) {
+        if (!isSpeedrunWorld(player.getWorld())) {
+            player.sendMessage(MM.deserialize("<yellow>[Timer] You are already in the lobby!</yellow>"));
+            return;
+        }
+        evacuatePlayerToLobby(player);
+        player.sendMessage(MM.deserialize("<green>[Timer] Returned to the lobby.</green>"));
+    }
+
     private @Nullable World createSpeedrunOverworld() {
         long seed = ThreadLocalRandom.current().nextLong();
+        World lobby = getLobbyWorld();
+        boolean hardcore = lobby.isHardcore();
+
         WorldCreator creator = new WorldCreator(SPEEDRUN_OVERWORLD)
                 .environment(World.Environment.NORMAL)
-                .seed(seed);
+                .seed(seed)
+                .hardcore(hardcore)
+                .keepSpawnLoaded(TriState.FALSE);
         World world = Bukkit.createWorld(creator);
         if (world != null) {
             world.setTime(0L);
             world.setStorm(false);
             world.setThundering(false);
-            world.setDifficulty(getLobbyWorld().getDifficulty());
+            world.setDifficulty(lobby.getDifficulty());
+            world.setHardcore(hardcore);
         }
         return world;
     }
@@ -321,13 +480,16 @@ public class WorldResetManager implements Listener {
             p.sendActionBar(MM.deserialize("<gold>Generating Nether dimension...</gold>"));
         }
 
+        boolean hardcore = overworld.isHardcore();
         WorldCreator creator = new WorldCreator(SPEEDRUN_NETHER)
                 .environment(World.Environment.NETHER)
                 .seed(overworld.getSeed())
+                .hardcore(hardcore)
                 .keepSpawnLoaded(TriState.FALSE);
         nether = Bukkit.createWorld(creator);
         if (nether != null) {
             nether.setDifficulty(overworld.getDifficulty());
+            nether.setHardcore(hardcore);
         }
         return nether;
     }
@@ -346,19 +508,22 @@ public class WorldResetManager implements Listener {
             p.sendActionBar(MM.deserialize("<light_purple>Generating The End dimension...</light_purple>"));
         }
 
+        boolean hardcore = overworld.isHardcore();
         WorldCreator creator = new WorldCreator(SPEEDRUN_THE_END)
                 .environment(World.Environment.THE_END)
                 .seed(overworld.getSeed())
+                .hardcore(hardcore)
                 .keepSpawnLoaded(TriState.FALSE);
         theEnd = Bukkit.createWorld(creator);
         if (theEnd != null) {
             theEnd.setDifficulty(overworld.getDifficulty());
+            theEnd.setHardcore(hardcore);
         }
         return theEnd;
     }
 
     /**
-     * Evacuates a player to the lobby world and clears any run-specific tags so they are clean for the next start.
+     * Evacuates a player to the lobby world in SURVIVAL mode and clears any run-specific tags.
      */
     public void evacuatePlayerToLobby(Player player) {
         if (player.isDead()) {
@@ -370,6 +535,7 @@ public class WorldResetManager implements Listener {
         player.leaveVehicle();
         cancelEnderPearlsByPlayer(player);
 
+        player.setGameMode(GameMode.SURVIVAL);
         player.setFallDistance(0f);
         player.setFireTicks(0);
         player.setFreezeTicks(0);
@@ -507,7 +673,7 @@ public class WorldResetManager implements Listener {
     }
 
     // =========================================================================
-    // Event Handlers: Join, Quit, Respawn, and Portal Linking
+    // Event Handlers: Join, Quit, Death, Respawn, and Portal Linking
     // =========================================================================
 
     @EventHandler(priority = EventPriority.HIGH)
@@ -517,7 +683,7 @@ public class WorldResetManager implements Listener {
         TimerState state = timerManager.getState();
 
         // If a world reset is running or no run is active (IDLE), keep everyone in the lobby
-        if (resetInProgress || state == TimerState.IDLE) {
+        if (resetInProgress || pregenInProgress || state == TimerState.IDLE) {
             evacuatePlayerToLobby(player);
             return;
         }
@@ -555,9 +721,17 @@ public class WorldResetManager implements Listener {
         }
     }
 
+    @EventHandler
+    public void onPlayerDeath(PlayerDeathEvent event) {
+        Player player = event.getPlayer();
+        if (isSpeedrunWorld(player.getWorld()) && player.getWorld().isHardcore()) {
+            player.sendMessage(MM.deserialize("<gold>[Timer]</gold> <yellow>You died in Hardcore! Click <white><bold>Spectate World</bold></white> to watch your teammates, or use <aqua>/timer lobby</aqua> to return to the lobby.</yellow>"));
+        }
+    }
+
     @EventHandler(priority = EventPriority.HIGH)
     public void onPlayerRespawn(PlayerRespawnEvent event) {
-        if (resetInProgress || plugin.getTimerManager().getState() == TimerState.IDLE) {
+        if (resetInProgress || pregenInProgress || plugin.getTimerManager().getState() == TimerState.IDLE) {
             event.setRespawnLocation(getLobbySpawn());
             return;
         }
@@ -567,7 +741,24 @@ public class WorldResetManager implements Listener {
             return;
         }
 
-        // If the player has a valid bed or respawn anchor inside the speedrun worlds, honor it
+        Player player = event.getPlayer();
+
+        // In Hardcore mode, spawn the spectating player near a living teammate in the speedrun worlds (or at speedrun spawn)
+        if (overworld.isHardcore()) {
+            for (Player teammate : Bukkit.getOnlinePlayers()) {
+                if (!teammate.equals(player)
+                        && !teammate.isDead()
+                        && teammate.getGameMode() == GameMode.SURVIVAL
+                        && isSpeedrunWorld(teammate.getWorld())) {
+                    event.setRespawnLocation(teammate.getLocation());
+                    return;
+                }
+            }
+            event.setRespawnLocation(overworld.getSpawnLocation());
+            return;
+        }
+
+        // In standard Survival mode, if the player has a valid bed or respawn anchor inside the speedrun worlds, honor it
         Location respawnLoc = event.getRespawnLocation();
         if ((event.isBedSpawn() || event.isAnchorSpawn())
                 && respawnLoc.getWorld() != null

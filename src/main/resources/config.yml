@@ -18,6 +18,12 @@ play-sounds: true
 # Spawn celebration fireworks for all players upon setting a new server record
 celebration-fireworks: true
 
+# Radius in chunks around the speedrun spawn to pre-generate while waiting in the lobby (8 = 17x17 = 289 chunks)
+pregen-chunk-radius: 8
+
+# Maximum number of chunks generating asynchronously at the same time (lower = less CPU/lag in lobby)
+pregen-max-concurrent: 2
+
 # Pre-configured categories & their sequential splits
 categories:
 
