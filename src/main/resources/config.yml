@@ -24,6 +24,10 @@ pregen-chunk-radius: 8
 # Maximum number of chunks generating asynchronously at the same time (lower = less CPU/lag in lobby)
 pregen-max-concurrent: 2
 
+# Speedrun world settings (independent from the lobby world, which is never hardcore)
+speedrun-hardcore: false
+speedrun-difficulty: "NORMAL"
+
 # Pre-configured categories & their sequential splits
 categories:
 

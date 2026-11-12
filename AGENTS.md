@@ -92,8 +92,10 @@ src/main/
 - **Safety Edge Cases**:
   - Revives dead players (`player.spigot().respawn()`), wakes sleeping players, dismounts vehicles, and removes in-flight `EnderPearl` projectiles before teleporting or unloading worlds.
 
-### 5. Hardcore Mode, `/timer lobby` & `/timer join`
-- `createNextSpeedrunOverworld()`, `getOrCreateNether()`, and `getOrCreateTheEnd()` inherit `getLobbyWorld().isHardcore()`.
+### 5. Separated Hardcore & Difficulty, `/timer lobby` & `/timer join`
+- **Lobby vs. Speedrun World Settings**:
+  - The **Lobby** world is never hardcore (`setHardcore(false)`), while its difficulty (`/difficulty`) and player gamemode (`/gamemode`) can be changed freely.
+  - The **Speedrun** worlds (`speedrun_<N>`, `speedrun_<N>_nether`, `speedrun_<N>_the_end`) use independent `speedrun-hardcore` and `speedrun-difficulty` settings persisted in `config.yml` and changeable live via `/timer hardcore <on|off|toggle>` and `/timer difficulty <easy|normal|hard>`.
 - When a player dies in a Hardcore speedrun world (`onPlayerDeath`), their Hardcore death is recorded (`hardcore_dead_world_uid` PDC) and they are notified that they can click **Spectate World** to watch teammates or run `/timer lobby` to return to the lobby.
 - `onPlayerRespawn` spawns Hardcore spectators directly at a living teammate's location in the speedrun worlds (falling back to the Overworld spawn).
 - `/timer lobby` snapshots the player's current speedrun state (`SavedSpeedrunState`: exact coordinates/dimension, health/hunger, XP/effects, inventory/Ender Chest, and Hardcore spectator status), teleports them to the lobby spawn in `GameMode.SURVIVAL`, and preserves their `active_world_uid` tag.
@@ -105,7 +107,7 @@ src/main/
 - Players in the **Lobby** have their sidebar scoreboard hidden (`objective.setDisplaySlot(null)`) and see a top-of-screen Adventure `BossBar`:
   - `Lobby - Resetting World...` (`RED`, `0%`)
   - `Lobby - Generating World (XX%)` (`YELLOW`, `0%–100%` live chunk pre-gen progress)
-  - `Lobby - Ready (/timer start)` (`GREEN`, `100%`)
+  - `Lobby - Ready [HARDCORE|NORMAL|...] (/timer start)` (`GREEN`, `100%`)
   - `Lobby - Run in Progress (MM:SS.d) (/timer join)` / `Lobby - Run Paused (MM:SS.d) (/timer join)` (`BLUE` / `YELLOW`, `100%`)
 - As soon as a player enters a `speedrun_*` world, the BossBar hides and the LiveSplit sidebar scoreboard is displayed (`DisplaySlot.SIDEBAR`).
 
@@ -125,5 +127,7 @@ src/main/
 | `/timer toggle` | Toggles sidebar scoreboard visibility for the caller | All players |
 | `/timer category <name>` | Switches active speedrun category | `towerspeed.timer` |
 | `/timer records [view\|delete\|clear]` | Views or manages Top 5 leaderboard records | `towerspeed.timer` (`clear` requires `towerspeed.admin`) |
+| `/timer hardcore <on\|off\|toggle>` | Toggles Hardcore mode for speedrun worlds (Lobby stays non-hardcore Peaceful) | `towerspeed.admin` (default: `op`) |
+| `/timer difficulty <easy\|normal\|hard>` | Sets difficulty for speedrun worlds (Lobby stays Peaceful) | `towerspeed.admin` (default: `op`) |
 | `/timer worldreset` | Resets timer, sends everyone to lobby, unloads/deletes old speedrun worlds, and pre-generates a new seed | `towerspeed.admin` (default: `op`) |
 | `/timer reload` | Reloads `config.yml` and record JSON files | `towerspeed.admin` (default: `op`) |

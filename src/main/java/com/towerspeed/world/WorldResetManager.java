@@ -68,6 +68,10 @@ public class WorldResetManager implements Listener {
     private boolean resetInProgress = false;
     private boolean worldFreshlyPrepared = false;
 
+    // Independent speedrun world settings (decoupled from the non-hardcore Peaceful lobby)
+    private boolean speedrunHardcore = false;
+    private Difficulty speedrunDifficulty = Difficulty.NORMAL;
+
     // Throttled chunk pre-generation state
     private boolean pregenInProgress = false;
     private int pregenTotalChunks = 0;
@@ -111,6 +115,83 @@ public class WorldResetManager implements Listener {
         this.plugin = plugin;
         this.activeWorldUidKey = new NamespacedKey(plugin, "active_world_uid");
         this.hardcoreDeadWorldUidKey = new NamespacedKey(plugin, "hardcore_dead_world_uid");
+        loadSettingsFromConfig();
+    }
+
+    public void loadSettingsFromConfig() {
+        this.speedrunHardcore = plugin.getConfig().getBoolean("speedrun-hardcore", false);
+        String diffStr = plugin.getConfig().getString("speedrun-difficulty", "NORMAL").toUpperCase();
+        try {
+            Difficulty parsed = Difficulty.valueOf(diffStr);
+            this.speedrunDifficulty = (parsed == Difficulty.PEACEFUL) ? Difficulty.NORMAL : parsed;
+        } catch (IllegalArgumentException e) {
+            this.speedrunDifficulty = Difficulty.NORMAL;
+        }
+        applySettingsToLoadedSpeedrunWorlds();
+        configureLobbyWorld();
+    }
+
+    public void configureLobbyWorld() {
+        List<World> worlds = Bukkit.getWorlds();
+        if (!worlds.isEmpty()) {
+            World lobby = worlds.getFirst();
+            lobby.setHardcore(false);
+        }
+    }
+
+    public boolean isSpeedrunHardcore() {
+        return speedrunHardcore;
+    }
+
+    public Difficulty getSpeedrunDifficulty() {
+        return speedrunDifficulty;
+    }
+
+    public Difficulty getEffectiveSpeedrunDifficulty() {
+        return speedrunHardcore ? Difficulty.HARD : speedrunDifficulty;
+    }
+
+    public void setSpeedrunHardcore(boolean enabled, CommandSender sender) {
+        this.speedrunHardcore = enabled;
+        if (enabled) {
+            this.speedrunDifficulty = Difficulty.HARD;
+            plugin.getConfig().set("speedrun-difficulty", Difficulty.HARD.name());
+        }
+        plugin.getConfig().set("speedrun-hardcore", enabled);
+        plugin.saveConfig();
+
+        applySettingsToLoadedSpeedrunWorlds();
+        configureLobbyWorld();
+
+        String statusTag = enabled ? "<red><bold>HARDCORE ON</bold></red> <gray>(Difficulty: HARD)</gray>" : "<green><bold>HARDCORE OFF</bold></green> <gray>(Difficulty: " + speedrunDifficulty.name() + ")</gray>";
+        Bukkit.broadcast(MM.deserialize("<gold>[Timer]</gold> <yellow>Speedrun world mode set to: </yellow>" + statusTag + " <gray>(by " + sender.getName() + ")</gray>"));
+    }
+
+    public void setSpeedrunDifficulty(Difficulty difficulty, CommandSender sender) {
+        this.speedrunDifficulty = difficulty;
+        plugin.getConfig().set("speedrun-difficulty", difficulty.name());
+        if (speedrunHardcore && difficulty != Difficulty.HARD) {
+            this.speedrunHardcore = false;
+            plugin.getConfig().set("speedrun-hardcore", false);
+        }
+        plugin.saveConfig();
+
+        applySettingsToLoadedSpeedrunWorlds();
+        configureLobbyWorld();
+
+        Bukkit.broadcast(MM.deserialize("<gold>[Timer]</gold> <yellow>Speedrun world difficulty set to: <white><bold>"
+                + difficulty.name() + "</bold></white></yellow> <gray>(by " + sender.getName() + ")</gray>"));
+    }
+
+    private void applySettingsToLoadedSpeedrunWorlds() {
+        Difficulty effectiveDiff = getEffectiveSpeedrunDifficulty();
+        for (String worldName : List.of(activeOverworldName, activeNetherName, activeEndName)) {
+            World w = Bukkit.getWorld(worldName);
+            if (w != null) {
+                w.setHardcore(speedrunHardcore);
+                w.setDifficulty(effectiveDiff);
+            }
+        }
     }
 
     /**
@@ -118,6 +199,7 @@ public class WorldResetManager implements Listener {
      * from a previous session and begin background pre-generation of the initial speedrun world.
      */
     public void initializeOnStartup() {
+        configureLobbyWorld();
         cleanupStaleWorldDirectories();
 
         // Prepare and pre-generate the initial speedrun world in the background once the server finishes booting
@@ -749,10 +831,11 @@ public class WorldResetManager implements Listener {
         } while (new File(container, activeOverworldName).exists() || Bukkit.getWorld(activeOverworldName) != null);
 
         long seed = ThreadLocalRandom.current().nextLong();
-        World lobby = getLobbyWorld();
-        boolean hardcore = lobby.isHardcore();
+        boolean hardcore = this.speedrunHardcore;
+        Difficulty difficulty = getEffectiveSpeedrunDifficulty();
 
-        plugin.getLogger().info("Creating new speedrun Overworld '" + activeOverworldName + "' with seed: " + seed);
+        plugin.getLogger().info("Creating new speedrun Overworld '" + activeOverworldName + "' with seed: " + seed
+                + " (hardcore=" + hardcore + ", difficulty=" + difficulty + ")");
 
         WorldCreator creator = new WorldCreator(activeOverworldName)
                 .environment(World.Environment.NORMAL)
@@ -764,7 +847,7 @@ public class WorldResetManager implements Listener {
             world.setTime(0L);
             world.setStorm(false);
             world.setThundering(false);
-            world.setDifficulty(lobby.getDifficulty());
+            world.setDifficulty(difficulty);
             world.setHardcore(hardcore);
         }
         return world;
@@ -784,7 +867,8 @@ public class WorldResetManager implements Listener {
             p.sendActionBar(MM.deserialize("<gold>Generating Nether dimension...</gold>"));
         }
 
-        boolean hardcore = overworld.isHardcore();
+        boolean hardcore = this.speedrunHardcore;
+        Difficulty difficulty = getEffectiveSpeedrunDifficulty();
         WorldCreator creator = new WorldCreator(activeNetherName)
                 .environment(World.Environment.NETHER)
                 .seed(overworld.getSeed())
@@ -792,7 +876,7 @@ public class WorldResetManager implements Listener {
                 .keepSpawnLoaded(TriState.FALSE);
         nether = Bukkit.createWorld(creator);
         if (nether != null) {
-            nether.setDifficulty(overworld.getDifficulty());
+            nether.setDifficulty(difficulty);
             nether.setHardcore(hardcore);
         }
         return nether;
@@ -812,7 +896,8 @@ public class WorldResetManager implements Listener {
             p.sendActionBar(MM.deserialize("<light_purple>Generating The End dimension...</light_purple>"));
         }
 
-        boolean hardcore = overworld.isHardcore();
+        boolean hardcore = this.speedrunHardcore;
+        Difficulty difficulty = getEffectiveSpeedrunDifficulty();
         WorldCreator creator = new WorldCreator(activeEndName)
                 .environment(World.Environment.THE_END)
                 .seed(overworld.getSeed())
@@ -820,16 +905,19 @@ public class WorldResetManager implements Listener {
                 .keepSpawnLoaded(TriState.FALSE);
         theEnd = Bukkit.createWorld(creator);
         if (theEnd != null) {
-            theEnd.setDifficulty(overworld.getDifficulty());
+            theEnd.setDifficulty(difficulty);
             theEnd.setHardcore(hardcore);
         }
         return theEnd;
     }
 
     /**
-     * Evacuates a player to the lobby world in SURVIVAL mode and clears any run-specific tags.
+     * Evacuates a player to the lobby world and clears any run-specific tags.
+     * If the player was in a speedrun world or in SPECTATOR mode, restores them to SURVIVAL mode;
+     * if they were already in the lobby in CREATIVE mode, preserves their CREATIVE mode.
      */
     public void evacuatePlayerToLobby(Player player) {
+        boolean wasInSpeedrun = isSpeedrunWorld(player.getWorld());
         if (player.isDead()) {
             player.spigot().respawn();
         }
@@ -839,7 +927,9 @@ public class WorldResetManager implements Listener {
         player.leaveVehicle();
         cancelEnderPearlsByPlayer(player);
 
-        player.setGameMode(GameMode.SURVIVAL);
+        if (wasInSpeedrun || player.getGameMode() == GameMode.SPECTATOR) {
+            player.setGameMode(GameMode.SURVIVAL);
+        }
         player.setFallDistance(0f);
         player.setFireTicks(0);
         player.setFreezeTicks(0);
@@ -1080,21 +1170,33 @@ public class WorldResetManager implements Listener {
 
     @EventHandler(priority = EventPriority.HIGH)
     public void onPlayerRespawn(PlayerRespawnEvent event) {
-        if (resetInProgress || pregenInProgress || plugin.getTimerManager().getState() == TimerState.IDLE) {
+        Player player = event.getPlayer();
+
+        // If the player died in the lobby (or no run is active), always respawn them in the lobby (never Hardcore spectator)
+        if (!isSpeedrunWorld(player.getWorld()) || resetInProgress || pregenInProgress || plugin.getTimerManager().getState() == TimerState.IDLE) {
             event.setRespawnLocation(getLobbySpawn());
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!isSpeedrunWorld(player.getWorld()) && player.getGameMode() == GameMode.SPECTATOR) {
+                    player.setGameMode(GameMode.SURVIVAL);
+                }
+            });
             return;
         }
 
         World overworld = getActiveOverworld();
         if (overworld == null) {
+            event.setRespawnLocation(getLobbySpawn());
             return;
         }
 
-        Player player = event.getPlayer();
-
         // In Hardcore mode, spawn the spectating player near a living teammate in the speedrun worlds (or at speedrun spawn)
-        if (overworld.isHardcore()) {
+        if (overworld.isHardcore() || isHardcoreDead(player, overworld)) {
             event.setRespawnLocation(findLivingTeammateOrSpawn(player, overworld));
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (isSpeedrunWorld(player.getWorld())) {
+                    player.setGameMode(GameMode.SPECTATOR);
+                }
+            });
             return;
         }
 

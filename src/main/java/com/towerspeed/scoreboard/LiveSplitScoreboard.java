@@ -238,7 +238,11 @@ public class LiveSplitScoreboard {
                 lobbyBossBar.color(BossBar.Color.YELLOW);
                 lobbyBossBar.progress(1.0f);
             } else {
-                lobbyBossBar.name(MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <green>Ready (/timer start)</green>"));
+                String modeBadge = worldResetManager.isSpeedrunHardcore()
+                        ? "<red>[HARDCORE]</red>"
+                        : "<gray>[" + worldResetManager.getEffectiveSpeedrunDifficulty().name() + "]</gray>";
+                lobbyBossBar.name(MM.deserialize("<gold><bold>Lobby</bold></gold> <dark_gray>-</dark_gray> <green>Ready</green> "
+                        + modeBadge + " <green>(/timer start)</green>"));
                 lobbyBossBar.color(BossBar.Color.GREEN);
                 lobbyBossBar.progress(1.0f);
             }
