@@ -12,7 +12,7 @@ It provides a synchronized server-wide timer, LiveSplit sidebar scoreboard, Top 
 - **Server API**: `io.papermc.paper:paper-api:1.21.3-R0.1-SNAPSHOT`
 - **Text / UI**: Kyori Adventure (`MiniMessage`, `Title`, `BossBar`, `Component`)
 - **Command API**: Paper Brigadier `BasicCommand` registered via `LifecycleEvents.COMMANDS`
-- **Build Command**: `.\gradlew.bat build` → outputs `build/libs/TowerSpeedPlugin-2.0.0.jar`
+- **Build Command**: `.\gradlew.bat build` → outputs `build/libs/TowerSpeedPlugin-2.0.1.jar`
 
 ---
 

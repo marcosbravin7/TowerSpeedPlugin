@@ -2,6 +2,12 @@
 
 All notable changes to **TowerSpeedPlugin** are documented in this file.
 
+## [2.0.1] - 2026-11-12
+
+### Fixed
+- **Plugin Manifest Version Caching**:
+  - Registered project version and name as inputs to `processResources` in `build.gradle.kts`. This prevents Gradle from treating resource expansion as up-to-date across version bumps, ensuring `paper-plugin.yml` always reflects the correct plugin version in the server console.
+
 ## [2.0.0] - 2026-11-12
 
 ### Added
