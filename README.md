@@ -166,15 +166,21 @@ Records are stored in clean, human-readable JSON files located in:
 1. Open this folder in IntelliJ IDEA: **File → Open → `c:\Documentos\code\TowerSpeedPlugin`**.
 2. IntelliJ will detect the Gradle project and configure JDK 25 automatically.
 3. Open the Gradle tab on the right side: **Tasks → build → build** (or `jar`).
-4. Find the compiled file in `build/libs/TowerSpeedPlugin-2.0.1.jar`.
+4. Find the compiled file in `build/libs/TowerSpeedPlugin-2.0.2.jar`.
 
 ### Installing on your Server
-1. Copy `TowerSpeedPlugin-2.0.1.jar` into your server's `plugins/` folder.
+1. Copy `TowerSpeedPlugin-2.0.2.jar` into your server's `plugins/` folder.
 2. Start or restart your Paper or Purpur 26.3 server.
 
 ---
 
 ## Changelog
+
+### v2.0.2 — World Reset Cleanup & Fresh Seed Fix
+* **Paper 26.1+ `dimensions/` Cleanup & No Disk Accumulation**:
+  * Discovers and deletes old unloaded `speedrun_<N>` world folders across both pre-26.1 world container directories and Paper 26.1+ `dimensions/<namespace>/` folders using a non-blocking progressive-backoff background sweeper and startup cleanup.
+* **Fresh Random Seeds Across Server Restarts**:
+  * Drains in-flight async chunk pre-generation futures before unloading, verifies each newly created Overworld matches its requested random seed (retrying cleanly on the next slot if stale), and recycles the lowest clean `speedrun_<N>` slot once old folders are deleted.
 
 ### v2.0.1 — Build & Version Caching Fix
 * **Plugin Manifest Version Caching**:

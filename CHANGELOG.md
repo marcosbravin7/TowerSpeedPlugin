@@ -2,6 +2,18 @@
 
 All notable changes to **TowerSpeedPlugin** are documented in this file.
 
+## [2.0.2] - 2026-11-14
+
+### Fixed
+- **Paper 26.1+ `dimensions/` World Storage & Deletion**:
+  - Updated `WorldResetManager` to resolve actual world folders via `world.getWorldFolder()` and `discoverWorldSearchRoots()`, discovering both pre-26.1 root folders and Paper 26.1+ `dimensions/<namespace>/` paths while guarding deletion strictly to unloaded leaf `speedrun*` directories.
+- **Unreliable Unloading & Accumulating Old World Folders**:
+  - Drained in-flight `getChunkAtAsync` spawn pre-generation futures, prepared dimensions for unload (`setAutoSave(false)`, `setKeepSpawnInMemory(false)`, clearing chunk tickets, force-loaded chunks, and Ender Pearls), and retried `Bukkit.unloadWorld(..., false)` cleanly without leaking worlds in RAM.
+  - Replaced one-shot blocking deletion retries with a non-blocking progressive-backoff background `pendingDeletions` sweeper plus startup (`cleanupStaleWorldDirectories()`) and per-reset (`sweepStrayUnloadedDirectories()`) sweeps.
+- **Server Restart Stale Seed & Slot Number Reuse**:
+  - Replaced monotonic `worldIndex` with clean slot selection (`findNextCleanSlotIndex()`) that checks loaded worlds, all search roots, `pendingDeletions`, and `blockedSlotIndices`, recycling lower slots cleanly (`speedrun_1`, `speedrun_2`, ...) once deleted.
+  - Added post-creation `world.getSeed() == requestedSeed` verification with automatic unload and next-slot fallback if Paper returns a stale seed, and cleared speedrun bed/anchor respawn locations in `evacuatePlayerToLobby()`.
+
 ## [2.0.1] - 2026-11-12
 
 ### Fixed

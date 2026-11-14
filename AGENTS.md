@@ -12,7 +12,7 @@ It provides a synchronized server-wide timer, LiveSplit sidebar scoreboard, Top 
 - **Server API**: `io.papermc.paper:paper-api:1.21.3-R0.1-SNAPSHOT`
 - **Text / UI**: Kyori Adventure (`MiniMessage`, `Title`, `BossBar`, `Component`)
 - **Command API**: Paper Brigadier `BasicCommand` registered via `LifecycleEvents.COMMANDS`
-- **Build Command**: `.\gradlew.bat build` → outputs `build/libs/TowerSpeedPlugin-2.0.1.jar`
+- **Build Command**: `.\gradlew.bat build` → outputs `build/libs/TowerSpeedPlugin-2.0.2.jar`
 
 ---
 
@@ -54,11 +54,13 @@ src/main/
 - **Lobby vs. Speedrun Worlds**:
   - The server's primary world (`Bukkit.getWorlds().getFirst()`, typically `world`) acts as the **Lobby**.
   - Runs take place in dedicated secondary worlds: `speedrun_<N>` (Overworld), `speedrun_<N>_nether` (Nether), and `speedrun_<N>_the_end` (The End).
-- **Why World Names Rotate (`speedrun_1`, `speedrun_2`, ...)**:
+- **Clean Rotating Slots (`speedrun_1`, `speedrun_2`, ...) & Paper 26.1+ `dimensions/` Support**:
   - On Windows, Paper's asynchronous `Moonrise` chunk I/O system holds file locks on `level.dat` and `.mca` region files briefly after `Bukkit.unloadWorld(..., false)` returns `true`.
-  - If the same folder name (`speedrun`) is reused immediately, `level.dat` may still be locked on disk, causing `Bukkit.createWorld()` to load the old `level.dat` (and reuse the old seed) instead of generating a new seed.
-  - Incrementing `worldIndex` (`speedrun_1`, `speedrun_2`, ...) guarantees the target folder never exists on disk when `Bukkit.createWorld()` runs, forcing a 100% fresh `level.dat` and random seed every time.
-  - The unloaded `speedrun_<N-1>` directories are deleted asynchronously 40 ticks (2 seconds) later with retries, and any leftover unloaded `speedrun*` folders are swept on server startup (`initializeOnStartup()`).
+  - Additionally, starting in Paper 26.1+, custom worlds created via `WorldCreator` may be stored under `<world>/dimensions/<namespace>/speedrun_<N>` rather than `<worldContainer>/speedrun_<N>`.
+  - `discoverWorldSearchRoots()` and `world.getWorldFolder().toPath()` track both layouts, while `isSafeSpeedrunDirectoryToDelete()` restricts deletion strictly to unloaded leaf directories matching `SPEEDRUN_DIR_PATTERN`.
+  - Before unloading on `/timer worldreset`, `waitForDrainAndUnload()` waits for in-flight `activeChunkRequests` from chunk pre-generation to drain, prepares worlds (`prepareWorldForUnload()`), and retries `Bukkit.unloadWorld(..., false)` up to `MAX_UNLOAD_ATTEMPTS` (aborting cleanly rather than leaking loaded worlds in RAM).
+  - Unloaded folders are enqueued in `pendingDeletions` and deleted asynchronously via a non-blocking progressive-backoff sweeper (`scheduleDeletionSweep()` / `runDeletionSweep()`), plus swept across all search roots on startup (`cleanupStaleWorldDirectories()`) and resets (`sweepStrayUnloadedDirectories()`).
+  - `findNextCleanSlotIndex()` picks the lowest clean `speedrun_<N>` slot absent from loaded worlds, all search roots, `pendingDeletions`, and `blockedSlotIndices`, and `createNextSpeedrunOverworld()` verifies `world.getSeed() == requestedSeed` (retrying on the next clean slot if Paper loaded a stale seed).
 
 ### 2. Throttled Spiral Spawn Chunk Pre-Generation (`WorldResetManager.java`)
 - **Zero-Lag Background Pre-Gen**:
